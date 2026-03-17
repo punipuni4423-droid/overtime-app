@@ -1,0 +1,174 @@
+@import "tailwindcss";
+@import "react-datepicker/dist/react-datepicker.css";
+
+@layer base {
+  :root {
+    --color-primary: #007B7E;
+  }
+
+  body,
+  html {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #f7f9fa;
+    color: #333;
+  }
+
+  /* Custom Scrollbar for the app */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 10px;
+    border: 1px solid #f1f1f1;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #999;
+  }
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #ccc #f1f1f1;
+}
+
+
+
+/* ─── react-datepicker theme override ─── */
+
+/* Wrapper: full width */
+.react-datepicker-wrapper {
+  width: 100%;
+}
+
+.react-datepicker__input-container input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.react-datepicker__input-container input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(0, 123, 126, 0.15);
+}
+
+/* Calendar popup */
+.react-datepicker {
+  font-family: inherit !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08) !important;
+  overflow: hidden;
+}
+
+.react-datepicker__header {
+  background: linear-gradient(135deg, #007B7E, #009a9e) !important;
+  border-bottom: none !important;
+  border-radius: 0 !important;
+  padding-top: 0.75rem !important;
+}
+
+.react-datepicker__current-month {
+  color: white !important;
+  font-weight: 700 !important;
+  font-size: 0.95rem !important;
+  margin-bottom: 0.25rem;
+}
+
+.react-datepicker__day-name {
+  color: rgba(255, 255, 255, 0.85) !important;
+  font-weight: 600 !important;
+  font-size: 0.75rem !important;
+  width: 2.2rem !important;
+  margin: 0.1rem !important;
+}
+
+/* Navigation arrows */
+.react-datepicker__navigation-icon::before {
+  border-color: white !important;
+}
+
+.react-datepicker__navigation:hover *::before {
+  border-color: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* Day cells */
+.react-datepicker__day {
+  width: 2.2rem !important;
+  line-height: 2.2rem !important;
+  margin: 0.1rem !important;
+  border-radius: 50% !important;
+  font-size: 0.8rem !important;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.react-datepicker__day:hover {
+  background-color: rgba(0, 123, 126, 0.1) !important;
+  border-radius: 50% !important;
+}
+
+/* Selected day (single or start/end of range) */
+.react-datepicker__day--selected,
+.react-datepicker__day--range-start,
+.react-datepicker__day--range-end {
+  background-color: var(--color-primary) !important;
+  color: white !important;
+  border-radius: 50% !important;
+  font-weight: 700 !important;
+}
+
+.react-datepicker__day--selected:hover,
+.react-datepicker__day--range-start:hover,
+.react-datepicker__day--range-end:hover {
+  background-color: #006669 !important;
+}
+
+/* Days in range (between start and end) */
+.react-datepicker__day--in-range,
+.react-datepicker__day--in-selecting-range {
+  background-color: rgba(0, 123, 126, 0.15) !important;
+  color: #007B7E !important;
+  border-radius: 0 !important;
+}
+
+/* Keyboard-selected */
+.react-datepicker__day--keyboard-selected {
+  background-color: rgba(0, 123, 126, 0.2) !important;
+  color: var(--color-primary) !important;
+}
+
+/* Today */
+.react-datepicker__day--today {
+  font-weight: 700 !important;
+}
+
+/* Disabled / outside month */
+.react-datepicker__day--outside-month {
+  color: #ccc !important;
+}
+
+.react-datepicker__day--disabled {
+  color: #ccc !important;
+  text-decoration: line-through;
+}
+
+/* Triangle arrow */
+.react-datepicker__triangle {
+  display: none !important;
+}

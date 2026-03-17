@@ -1,0 +1,26 @@
+appId: com.x1studio.overtime-app
+productName: 残業申請ツール
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+  - resources/**/*
+asar: true
+win:
+  executableName: 残業申請ツール
+  target:
+    - nsis
+  icon: build/icon.png
+  forceCodeSigning: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: false
+  artifactName: ${productName}_Setup_${version}.${ext}
+npmRebuild: false
+publish:
+  provider: github
+  owner: punipuni4423-droid
+  repo: overtime-app
+  private: true
