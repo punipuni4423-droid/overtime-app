@@ -9,8 +9,8 @@ import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyClose
 const store = new Store({
   defaults: {
     ACCESS_TOKEN: '',
-    COMPANY_ID: 2699275,
-    APPLICANT_ID: 10405622,
+    COMPANY_ID: 0,
+    APPLICANT_ID: 0,
     LAST_END_TIME: '20:00',
     LAST_ROUTE_ID: null,
     LAST_DEPARTMENT_ID: null,

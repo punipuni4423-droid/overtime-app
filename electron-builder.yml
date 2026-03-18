@@ -1,4 +1,4 @@
-appId: com.x1studio.overtime-app
+appId: com.overtime-app.app
 productName: 残業申請ツール
 directories:
   buildResources: build
