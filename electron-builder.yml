@@ -23,4 +23,4 @@ publish:
   provider: github
   owner: punipuni4423-droid
   repo: overtime-app
-  private: true
+  private: false

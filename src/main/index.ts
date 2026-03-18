@@ -639,7 +639,7 @@ app.whenReady().then(() => {
     })
 
     autoUpdater.checkForUpdates().catch((e) =>
-      console.warn('[AutoUpdater] checkForUpdates failed:', e.message)
+      console.error('[AutoUpdater] checkForUpdates failed:', e.message, e.stack)
     )
   }
 
