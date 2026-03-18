@@ -31,6 +31,9 @@ const api = {
   exchangeAuthCode: (code: string) => ipcRenderer.invoke('token-exchange-code', code),
   forceRefreshToken: () => ipcRenderer.invoke('token-force-refresh'),
 
+  // App version
+  getAppVersion: () => ipcRenderer.invoke('app-version'),
+
   // Auto-update
   onUpdateAvailable: (callback: (version: string) => void) =>
     ipcRenderer.on('update-available', (_e, version) => callback(version)),

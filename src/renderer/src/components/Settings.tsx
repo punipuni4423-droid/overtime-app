@@ -22,6 +22,7 @@ export function Settings({ onBack }: Props) {
     const [authMessage, setAuthMessage] = useState<string | null>(null)
     const [authError, setAuthError] = useState<string | null>(null)
     const [refreshing, setRefreshing] = useState(false)
+    const [appVersion, setAppVersion] = useState('')
 
     useEffect(() => {
         async function load() {
@@ -42,6 +43,8 @@ export function Settings({ onBack }: Props) {
 
             const status = await window.api.getTokenStatus()
             setTokenStatus(status)
+            const ver = await window.api.getAppVersion()
+            setAppVersion(ver)
         }
         load()
     }, [])
@@ -354,6 +357,11 @@ export function Settings({ onBack }: Props) {
                     </div>
                 </div>
                 
+                {/* Version */}
+                <div className="text-center text-xs text-gray-400 mt-2 mb-2">
+                    バージョン {appVersion || '---'}
+                </div>
+
                 {/* Extra padding at bottom */}
                 <div className="h-10"></div>
             </div>

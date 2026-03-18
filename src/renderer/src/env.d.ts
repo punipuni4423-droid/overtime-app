@@ -41,6 +41,9 @@ interface Window {
     exchangeAuthCode: (code: string) => Promise<TokenResult>
     forceRefreshToken: () => Promise<TokenResult>
 
+    // App version
+    getAppVersion: () => Promise<string>
+
     // Auto-update
     onUpdateAvailable: (callback: (version: string) => void) => void
     onUpdateDownloaded: (callback: (version: string) => void) => void

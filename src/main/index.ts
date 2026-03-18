@@ -88,6 +88,7 @@ app.whenReady().then(() => {
   })
 
   ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.handle('app-version', () => app.getVersion())
 
   // ─── Settings Store IPC ───────────────────────────────────────
   ipcMain.handle('store-get', (_, key) => store.get(key))
