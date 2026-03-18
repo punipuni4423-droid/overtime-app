@@ -1,6 +1,6 @@
 {
   "name": "overtime-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -58,7 +58,9 @@
     "prettier": "^3.7.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.2.1",
+    "to-ico": "^1.1.5",
     "typescript": "^5.9.3",
     "vite": "^7.2.6"
   }
