@@ -4,7 +4,7 @@ import axios from 'axios'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import { TokenManager, TokenAuthRequiredError } from './tokenManager'
-import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser } from './automation'
+import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, submitTimeClockViaBrowser } from './automation'
 
 const store = new Store({
   defaults: {
@@ -28,14 +28,41 @@ const store = new Store({
 
 const tokenManager = new TokenManager(store)
 
+// ─── ユーザー情報の一元取得ヘルパー ──────────────────────────────────
+// COMPANY_ID / APPLICANT_ID をストアから取得し、未設定の場合はAPIから自動解決して保存する。
+// アップデートでデフォルト値が変わっても、このヘルパーを通じて常に正しい値が得られる。
+// ユーザー情報キャッシュ（セッション中のみ有効、store には保存しない）
+let _cachedUserInfo: { companyId: number; applicantId: number; employeeId: number } | null = null
+
+async function getUserInfo(token: string): Promise<{ companyId: number; applicantId: number; employeeId: number }> {
+  if (_cachedUserInfo) return _cachedUserInfo
+
+  const res = await axios.get('https://api.freee.co.jp/hr/api/v1/users/me', {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+  })
+  const userId: number = res.data.id  // user_id（申請者ID）
+  const companies: any[] = res.data.companies || []
+  if (companies.length === 0) throw new Error('freeeの会社情報が取得できませんでした。再認証してください。')
+  const company = companies[0]
+  const companyId: number = company.id
+  const employeeId: number = company.employee_id  // employee_id（従業員ID）
+
+  if (!companyId) throw new Error('会社IDが取得できませんでした。再認証してください。')
+  if (!userId) throw new Error('申請者IDが取得できませんでした。再認証してください。')
+
+  _cachedUserInfo = { companyId, applicantId: userId, employeeId }
+  console.log(`[UserInfo] companyId=${companyId}, applicantId(userId)=${userId}, employeeId=${employeeId}`)
+  return _cachedUserInfo
+}
+
 import icon from '../../resources/icon.png?asset'
 
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 450,
-    height: 1045,
+    width: 550,
+    height: 800,
     resizable: false,
     show: false,
     autoHideMenuBar: true,
@@ -65,6 +92,11 @@ function createWindow(): void {
   }
 }
 
+// ─── RPA ヘッドレス設定 ───────────────────────────────────────────
+// 開発時(npm run dev): ブラウザ表示 (headless=false)
+// リリース版(パッケージ後): バックグラウンド (headless=true)
+const RPA_HEADLESS = true  // v1.0.7: 常にバックグラウンド動作（デバッグ時は false に変更）
+
 app.whenReady().then(() => {
   // Set app user model id for windows
   if (process.platform === 'win32') {
@@ -87,8 +119,20 @@ app.whenReady().then(() => {
     }
   })
 
+  // ─── 起動時にユーザー情報を自動解決 ─────────────────────────────
+  // トークンが有効な場合、COMPANY_ID/APPLICANT_IDが未設定なら自動取得して保存する
+  tokenManager.getValidAccessToken()
+    .then(token => getUserInfo(token))
+    .catch(() => { /* トークン未設定またはリフレッシュ不可の場合は無視 */ })
+
   ipcMain.on('ping', () => console.log('pong'))
   ipcMain.handle('app-version', () => app.getVersion())
+
+  // ─── ユーザー情報取得（フロントエンド共通） ─────────────────────
+  ipcMain.handle('api-get-user-info', async () => {
+    const token = await tokenManager.getValidAccessToken()
+    return await getUserInfo(token)
+  })
 
   // ─── Settings Store IPC ───────────────────────────────────────
   ipcMain.handle('store-get', (_, key) => store.get(key))
@@ -117,6 +161,14 @@ app.whenReady().then(() => {
   ipcMain.handle('token-start-auth', async () => {
     try {
       const tokenData = await tokenManager.startAuthFlow()
+
+      // 認証完了後、ユーザー情報を自動取得して保存
+      try {
+        await getUserInfo(tokenData.access_token)
+      } catch (e: any) {
+        console.warn('[Auth] Failed to auto-fetch user info:', e.message)
+      }
+
       return { success: true, tokenData }
     } catch (err: any) {
       return { success: false, message: err.message }
@@ -226,7 +278,7 @@ app.whenReady().then(() => {
         ...payload,
         email,
         password,
-        headless: false
+        headless: RPA_HEADLESS
       })
     } catch (error: any) {
       console.error('Web Submit Error:', error)
@@ -234,9 +286,9 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle('api-fetch-approvals', async (_, companyId) => {
+  ipcMain.handle('api-fetch-approvals', async () => {
     const token = await tokenManager.getValidAccessToken()
-    const myApplicantId = store.get('APPLICANT_ID') as number
+    const { companyId, applicantId: myApplicantId } = await getUserInfo(token)
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     const params = { company_id: companyId }
 
@@ -377,18 +429,22 @@ app.whenReady().then(() => {
   })
 
   // ─── 自分の申請一覧取得 ────────────────────────────────────────
-  ipcMain.handle('api-fetch-my-requests', async (_, companyId) => {
+  ipcMain.handle('api-fetch-my-requests', async () => {
     const token = await tokenManager.getValidAccessToken()
-    const myApplicantId = store.get('APPLICANT_ID') as number
+    const { companyId, applicantId: myApplicantId } = await getUserInfo(token)
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
-    const params = { company_id: companyId }
+    // サーバー側で applicant_id フィルタ + limit=100 で自分の申請のみ取得
+    const params = { company_id: companyId, applicant_id: myApplicantId, limit: 100 }
+    console.log(`[MY-REQ] Fetching requests for companyId=${companyId}, applicantId(userId)=${myApplicantId}`)
     // 除外ステータス（承認済み・却下・取り下げ済みは非表示）
     // draft（下書き）は含める：フロント側でフィルタリングする
     const excludeStatuses = ['approved', 'denied', 'feedback_waiting', 'withdrawn', 'feedback']
 
     const routeMap: Record<string, string> = {}
     try {
-      const routeRes = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_flow_routes', { headers, params })
+      const routeRes = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_flow_routes', {
+        headers, params: { company_id: companyId }
+      })
       const routes: any[] = routeRes.data.approval_flow_routes || []
       for (const r of routes) routeMap[String(r.id)] = r.name
     } catch (e: any) { console.warn('[API] routes fetch failed:', e.message) }
@@ -399,9 +455,8 @@ app.whenReady().then(() => {
     try {
       const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/overtime_works', { headers, params })
       const items: any[] = res.data.overtime_works || (Array.isArray(res.data) ? res.data : [])
+      console.log(`[MY-REQ] overtime total=${items.length}`)
       for (const item of items) {
-        const applicantId = item.applicant_id ?? item.employee_id
-        if (String(applicantId) !== String(myApplicantId)) continue
         console.log(`[MY-REQ] overtime id=${item.id} status="${item.status}"`)
         if (excludeStatuses.includes(item.status)) continue
         results.push({
@@ -422,9 +477,8 @@ app.whenReady().then(() => {
     try {
       const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/paid_holidays', { headers, params })
       const items: any[] = res.data.paid_holidays || (Array.isArray(res.data) ? res.data : [])
+      console.log(`[MY-REQ] paid_holidays total=${items.length}`)
       for (const item of items) {
-        const applicantId = item.applicant_id ?? item.employee_id
-        if (String(applicantId) !== String(myApplicantId)) continue
         console.log(`[MY-REQ] paid_holiday id=${item.id} status="${item.status}"`)
         if (excludeStatuses.includes(item.status)) continue
         results.push({
@@ -442,9 +496,8 @@ app.whenReady().then(() => {
       const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/monthly_attendances', { headers, params })
       const rawItems = res.data
       const items: any[] = rawItems.monthly_attendances || rawItems.approval_requests || (Array.isArray(rawItems) ? rawItems : [])
+      console.log(`[MY-REQ] monthly_attendances total=${items.length}`)
       for (const item of items) {
-        const applicantId = item.applicant_id ?? item.employee_id
-        if (String(applicantId) !== String(myApplicantId)) continue
         console.log(`[MY-REQ] monthly_attendance id=${item.id} status="${item.status}"`)
         if (excludeStatuses.includes(item.status)) continue
         let targetDate = ''
@@ -472,7 +525,7 @@ app.whenReady().then(() => {
       if (!email || !password) {
         throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
       }
-      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'withdraw', headless: true })
+      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'withdraw', headless: RPA_HEADLESS })
     } catch (error: any) {
       console.error('Cancel request error:', error)
       throw error
@@ -487,7 +540,7 @@ app.whenReady().then(() => {
       if (!email || !password) {
         throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
       }
-      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'delete', headless: false })
+      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'delete', headless: RPA_HEADLESS })
     } catch (error: any) {
       console.error('Delete request error:', error)
       throw error
@@ -529,7 +582,8 @@ app.whenReady().then(() => {
       'am_half': 'morning_half',
       'pm_half': 'afternoon_half'
     }
-    const applicantId = payload.applicantId ?? store.get('APPLICANT_ID')
+    const { applicantId: resolvedApplicantId } = await getUserInfo(token)
+    const applicantId = payload.applicantId ?? resolvedApplicantId
     const apiPayload: any = {
       company_id: payload.companyId,
       applicant_id: applicantId,
@@ -565,7 +619,7 @@ app.whenReady().then(() => {
         ...payload,
         email,
         password,
-        headless: false
+        headless: RPA_HEADLESS
       })
     } catch (error: any) {
       console.error('Paid Leave Web Submit Error:', error)
@@ -578,7 +632,8 @@ app.whenReady().then(() => {
     const token = await tokenManager.getValidAccessToken()
     const url = 'https://api.freee.co.jp/hr/api/v1/approval_requests/monthly_attendances'
     console.log(`[API Call] POST ${url}`)
-    const applicantId = payload.applicantId ?? store.get('APPLICANT_ID')
+    const { applicantId: resolvedApplicantId2 } = await getUserInfo(token)
+    const applicantId = payload.applicantId ?? resolvedApplicantId2
     // freee HR API は target_date ではなく target_year / target_month を要求する
     const [targetYear, targetMonth] = (payload.targetDate as string).split('-').map(Number)
     const apiPayload: any = {
@@ -616,11 +671,80 @@ app.whenReady().then(() => {
         ...payload,
         email,
         password,
-        headless: false
+        headless: RPA_HEADLESS
       })
     } catch (error: any) {
       console.error('Monthly Close Web Submit Error:', error)
       throw error
+    }
+  })
+
+  // ─── 打刻 Web 自動操作 ────────────────────────────────────────
+  ipcMain.handle('api-web-submit-time-clock', async (_, payload) => {
+    try {
+      const email = store.get('FREEE_EMAIL') as string
+      const password = store.get('FREEE_PASSWORD') as string
+      if (!email || !password) {
+        throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
+      }
+      return await submitTimeClockViaBrowser({ ...payload, email, password, headless: RPA_HEADLESS })
+    } catch (error: any) {
+      console.error('TimeClock Web Submit Error:', error)
+      throw error
+    }
+  })
+
+  // ─── 打刻 API ──────────────────────────────────────────────────
+  ipcMain.handle('api-fetch-time-clocks', async (_, { companyId, employeeId, fromDate, toDate }) => {
+    const token = await tokenManager.getValidAccessToken()
+    const url = `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks`
+    console.log(`[API Call] GET ${url}`)
+    try {
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        params: { company_id: companyId, from_date: fromDate, to_date: toDate, limit: 100 }
+      })
+      return res.data
+    } catch (err: any) {
+      console.error(`[API Error] GET ${url} - Status: ${err.response?.status} - ${err.message}`)
+      throw new Error(err.response?.data ? JSON.stringify(err.response.data) : err.message)
+    }
+  })
+
+  ipcMain.handle('api-fetch-available-clock-types', async (_, { companyId, employeeId, date }) => {
+    const token = await tokenManager.getValidAccessToken()
+    const url = `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks/available_types`
+    console.log(`[API Call] GET ${url}`)
+    try {
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        params: { company_id: companyId, date }
+      })
+      return res.data
+    } catch (err: any) {
+      console.error(`[API Error] GET ${url} - Status: ${err.response?.status} - ${err.message}`)
+      throw new Error(err.response?.data ? JSON.stringify(err.response.data) : err.message)
+    }
+  })
+
+  ipcMain.handle('api-submit-time-clock', async (_, { companyId, employeeId, type, baseDate, datetime }) => {
+    const token = await tokenManager.getValidAccessToken()
+    const url = `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/time_clocks`
+    console.log(`[API Call] POST ${url} type=${type} base_date=${baseDate} datetime=${datetime || '(none)'}`)
+    const body: any = { company_id: companyId, type, base_date: baseDate }
+    if (datetime) body.datetime = datetime
+    try {
+      const res = await axios.post(url, body, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        }
+      })
+      return res.data
+    } catch (err: any) {
+      console.error(`[API Error] POST ${url} - Status: ${err.response?.status} - ${err.message}`)
+      throw new Error(err.response?.data ? JSON.stringify(err.response.data) : err.message)
     }
   })
 

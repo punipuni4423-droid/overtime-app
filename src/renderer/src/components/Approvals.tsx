@@ -43,29 +43,22 @@ export function Approvals() {
   const [items, setItems] = useState<ApprovalItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [companyId, setCompanyId] = useState<number | null>(null)
-
-  useEffect(() => {
-    window.api.storeGet('COMPANY_ID').then((id: any) => setCompanyId(Number(id)))
-  }, [])
-
   const fetchApprovals = useCallback(async () => {
-    if (!companyId) return
     setLoading(true)
     setError(null)
     try {
-      const data = await (window.api as any).fetchApprovals(companyId)
+      const data = await (window.api as any).fetchApprovals()
       setItems(data || [])
     } catch (err: any) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [companyId])
+  }, [])
 
   useEffect(() => {
-    if (companyId) fetchApprovals()
-  }, [companyId, fetchApprovals])
+    fetchApprovals()
+  }, [fetchApprovals])
 
   const openInFreee = (id: number) => {
     window.open(`https://p.secure.freee.co.jp/approval_requests#/requests/${id}`, '_blank')

@@ -17,7 +17,7 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: false
-  artifactName: ${productName}_Setup_${version}.${ext}
+  artifactName: overtime-app_Setup_${version}.${ext}
 npmRebuild: false
 publish:
   provider: github

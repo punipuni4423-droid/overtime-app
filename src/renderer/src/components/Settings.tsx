@@ -11,6 +11,7 @@ export function Settings({ onBack }: Props) {
     const [clientSecret, setClientSecret] = useState('')
     const [companyId, setCompanyId] = useState('')
     const [applicantId, setApplicantId] = useState('')
+    const [employeeId, setEmployeeId] = useState('')
     const [defaultDepartmentId, setDefaultDepartmentId] = useState('')
     const [freeeEmail, setFreeeEmail] = useState('')
     const [freeePassword, setFreeePassword] = useState('')
@@ -28,16 +29,19 @@ export function Settings({ onBack }: Props) {
         async function load() {
             const ci = await window.api.storeGet('CLIENT_ID')
             const cs = await window.api.storeGet('CLIENT_SECRET')
-            const c = await window.api.storeGet('COMPANY_ID')
-            const a = await window.api.storeGet('APPLICANT_ID')
             const dd = await window.api.storeGet('DEFAULT_DEPARTMENT_ID')
             const fe = await window.api.storeGet('FREEE_EMAIL')
             const fp = await window.api.storeGet('FREEE_PASSWORD')
             setClientId(ci || '')
             setClientSecret(cs || '')
-            setCompanyId(c?.toString() || '')
-            setApplicantId(a?.toString() || '')
             setDefaultDepartmentId(dd?.toString() || '')
+            // ユーザー情報をAPIから自動取得
+            try {
+                const info = await window.api.getUserInfo()
+                setCompanyId(info.companyId?.toString() || '')
+                setApplicantId(info.applicantId?.toString() || '')
+                setEmployeeId(info.employeeId?.toString() || '')
+            } catch { /* トークン未設定時は空のまま */ }
             setFreeeEmail(fe || '')
             setFreeePassword(fp || '')
 
@@ -52,8 +56,6 @@ export function Settings({ onBack }: Props) {
     const handleSave = async () => {
         await window.api.storeSet('CLIENT_ID', clientId)
         await window.api.storeSet('CLIENT_SECRET', clientSecret)
-        await window.api.storeSet('COMPANY_ID', parseInt(companyId, 10))
-        await window.api.storeSet('APPLICANT_ID', parseInt(applicantId, 10))
         if (defaultDepartmentId) {
             await window.api.storeSet('DEFAULT_DEPARTMENT_ID', parseInt(defaultDepartmentId, 10))
         } else {
@@ -266,26 +268,29 @@ export function Settings({ onBack }: Props) {
 
                     <div className="border-t border-gray-100"></div>
 
-                    {/* ── Basic Settings Section ── */}
+                    {/* ── アカウント情報（自動取得） ── */}
                     <div className="space-y-3 pb-2">
-                        <h2 className="text-base font-bold text-gray-800 mb-2">基本設定</h2>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Company ID</label>
-                            <input
-                                type="number"
-                                value={companyId}
-                                onChange={e => setCompanyId(e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition text-sm"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Applicant ID</label>
-                            <input
-                                type="number"
-                                value={applicantId}
-                                onChange={e => setApplicantId(e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition text-sm"
-                            />
+                        <h2 className="text-base font-bold text-gray-800 mb-2">アカウント情報</h2>
+                        <p className="text-xs text-gray-500 -mt-1">OAuth認証後、APIから自動取得されます（手動入力不要）</p>
+                        <div className="grid grid-cols-3 gap-3">
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-500 mb-1">Company ID</label>
+                                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 font-mono">
+                                    {companyId || '---'}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-500 mb-1">User ID</label>
+                                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 font-mono">
+                                    {applicantId || '---'}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-500 mb-1">Employee ID</label>
+                                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 font-mono">
+                                    {employeeId || '---'}
+                                </div>
+                            </div>
                         </div>
                         <div>
                             <div className="flex items-center gap-1.5 mb-1">
@@ -301,7 +306,6 @@ export function Settings({ onBack }: Props) {
                                 {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                             </select>
                         </div>
-
                     </div>
 
                     <div className="border-t border-gray-100"></div>

@@ -598,25 +598,59 @@ export async function submitOvertimeViaBrowser(payload: AutomationPayload & { he
         console.log('[RPA] Submitting...');
         await page.click(enabledSubmitSel);
 
-        // 申請後に「申請を取り下げる」ボタンを待つ（タイムアウトは無視）
-        await page.waitForSelector('button:has-text("申請を取り下げる")', { state: 'visible', timeout: 15000 }).catch(() => {
-            console.log('[RPA] withdraw button not found (ignored)');
+        // 申請後、成功（「申請を取り下げる」ボタン出現）またはエラーメッセージを待つ
+        await page.waitForTimeout(2000);
+
+        // エラーメッセージ確認（freee の各種エラー表示に対応）
+        const vbErrorText = await page.evaluate(() => {
+            // vb-messageBlock (FloatingMessage) — 「申請できませんでした」等
+            const msgBlock = document.querySelector('.vb-messageBlock__inner--alert .vb-messageBlockInternalMessage__content');
+            if (msgBlock?.textContent?.trim()) return msgBlock.textContent.trim();
+            // vb-message__content — 従来のエラー表示
+            const msgContent = document.querySelector('.vb-message__content');
+            if (msgContent?.textContent?.trim()) return msgContent.textContent.trim();
+            // vb-flash--error — レガシーエラー
+            const flash = document.querySelector('.vb-flash--error');
+            if (flash?.textContent?.trim()) return flash.textContent.trim();
+            // role="alert"
+            const alert = document.querySelector('[role="alert"]');
+            if (alert?.textContent?.trim()) return alert.textContent.trim();
+            return null;
         });
 
-        // エラーメッセージ確認（申請済み・バリデーションエラー等）
-        const vbErrorText = await page.evaluate(() => document.querySelector('.vb-message__content')?.textContent || null);
-        const isActualError = vbErrorText && (
+        if (vbErrorText && (
+            vbErrorText.includes('申請できませんでした') ||
             vbErrorText.includes('すでに') ||
             vbErrorText.includes('申請中もしくは承認') ||
             vbErrorText.includes('エラー') ||
             vbErrorText.includes('失敗') ||
-            vbErrorText.includes('必須')
-        );
-        if (isActualError) {
-            console.warn(`[RPA] Form error: ${vbErrorText!.trim()}`);
-            throw new Error(vbErrorText!.trim());
+            vbErrorText.includes('必須') ||
+            vbErrorText.includes('修正')
+        )) {
+            console.warn(`[RPA] Form error: ${vbErrorText}`);
+            throw new Error(vbErrorText);
         }
-        if (vbErrorText?.trim()) {
+
+        // 成功確認: 「申請を取り下げる」ボタンが出現するか確認
+        const withdrawBtnFound = await page.waitForSelector(
+            'button:has-text("申請を取り下げる")',
+            { state: 'visible', timeout: 10000 }
+        ).catch(() => null);
+
+        if (!withdrawBtnFound) {
+            // ボタンが出なかった場合、再度エラーチェック
+            const lateError = await page.evaluate(() => {
+                const el = document.querySelector('.vb-messageBlock__inner--alert .vb-messageBlockInternalMessage__content, .vb-message__content, [role="alert"]');
+                return el?.textContent?.trim() || null;
+            });
+            if (lateError) {
+                console.warn(`[RPA] Late error detected: ${lateError}`);
+                throw new Error(lateError);
+            }
+            console.log('[RPA] withdraw button not found, but no error detected.');
+        }
+
+        if (vbErrorText?.trim() && !vbErrorText.includes('申請できませんでした')) {
             console.log(`[RPA] Info message (not error): ${vbErrorText.trim()}`);
         }
 
@@ -631,6 +665,258 @@ export async function submitOvertimeViaBrowser(payload: AutomationPayload & { he
             try { fs.unlinkSync(SESSION_PATH); console.log('[RPA] Session cleared due to auth error.'); } catch { /* ignore */ }
         }
         throw new Error(`ブラウザ自動操作中にエラーが発生しました: ${error.message}`);
+    } finally {
+        console.log('[RPA] Closing browser.');
+        await browser.close();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 打刻 Web 自動操作
+// ─────────────────────────────────────────────────────────────
+export interface TimeClockWebPayload {
+    email: string;
+    password: string;
+    companyId: number;
+    employeeId: number;
+    targetDate: string;           // "2026-03-19"
+    clockIn: string;              // "09:00"
+    clockOut: string;             // "18:00"
+    breaks: { start: string; end: string }[];
+    headless?: boolean;
+}
+
+export async function submitTimeClockViaBrowser(payload: TimeClockWebPayload) {
+    console.log('[RPA] Starting TimeClock automation...');
+    const [year, month] = payload.targetDate.split('-');
+    const dayNum = parseInt(payload.targetDate.split('-')[2], 10);
+
+    const savedSession = loadSessionState();
+    if (savedSession) console.log('[RPA] Found saved session, will attempt to skip login.');
+
+    const browser = await chromium.launch({
+        channel: 'msedge',
+        headless: payload.headless !== false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    }).catch(() => chromium.launch({
+        channel: 'chrome',
+        headless: payload.headless !== false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    }));
+
+    const context = await browser.newContext({
+        viewport: { width: 1280, height: 900 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ...(savedSession ? { storageState: savedSession as any } : {})
+    });
+    const page = await context.newPage();
+
+    // 画像・フォント・メディアをブロックしてページ読み込みを高速化
+    await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'media', 'font'].includes(type)) route.abort();
+        else route.continue();
+    });
+
+    try {
+        await doLogin(page, context, payload.email, payload.password, savedSession);
+
+        // ── Step 1: 勤怠管理ページ（ハッシュルーティング）へ移動 ──────
+        const monthInt = parseInt(month, 10); // 先頭ゼロ除去 (03 → 3)
+        const workRecordsHash = `#work_records/${year}/${monthInt}/employees/${payload.employeeId}?page=1&per=100&sortBy=num&sortDirection=ASC`;
+        const workRecordsUrl = `https://p.secure.freee.co.jp/${workRecordsHash}`;
+        console.log('[RPA] Navigating to work_records URL:', workRecordsUrl);
+
+        // SPAのベースページをロードしてからハッシュ変更（直接gotoでも動作する）
+        await page.goto(workRecordsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(4000);
+        await logPageState(page, 'timeclock_01_work_records');
+
+        // ── Step 2: テーブルビューに切り替え ────────────────────────────
+        const tableBtn = await page.$('button:has-text("テーブル")');
+        if (tableBtn) {
+            await tableBtn.click();
+            await page.waitForTimeout(2000);
+            console.log('[RPA] Switched to table view.');
+            await logPageState(page, 'timeclock_02_table_view');
+        } else {
+            console.warn('[RPA] Table view button not found, continuing with current view.');
+        }
+
+        // ── Step 3: 対象日の編集ボタンをクリック ─────────────────────────
+        const dayStr = String(dayNum); // "19"
+        console.log(`[RPA] Looking for day ${dayStr} edit button...`);
+
+        // テーブル行から対象日の編集ボタン/リンクを探す
+        const editClicked = await page.evaluate(({ date, day }: any) => {
+            const dayInt = parseInt(day, 10);
+
+            // 方法A: data-date 属性 → 同じ行の編集ボタン/リンク
+            for (const attr of [`[data-date="${date}"]`, `[data-date="${date.replace(/-/g, '/')}"]`]) {
+                const cell = document.querySelector(attr);
+                if (cell) {
+                    const row = cell.closest('tr, [role="row"]');
+                    if (row) {
+                        const editBtn = row.querySelector('a[href*="edit"], a[href*="/edit"], button') as HTMLElement | null;
+                        if (editBtn) { editBtn.click(); return `data-date row editBtn: ${editBtn.textContent?.trim() || editBtn.getAttribute('href')}`; }
+                    }
+                    (cell as HTMLElement).click();
+                    return `data-date click: ${attr}`;
+                }
+            }
+
+            // 方法B: テーブル行のテキストマッチ → 編集リンク
+            const allRows = Array.from(document.querySelectorAll('tr, [role="row"]'));
+            for (const row of allRows) {
+                const text = (row.textContent || '').trim();
+                const hasDay = text.match(new RegExp(`(^|\\D)${dayInt}(日|\\s|$|\\D)`));
+                if (hasDay) {
+                    const editLink = row.querySelector('a[href*="edit"]') as HTMLAnchorElement | null;
+                    if (editLink) { editLink.click(); return `row editLink: ${editLink.getAttribute('href')}`; }
+                    const btn = row.querySelector('button:not([disabled])') as HTMLElement | null;
+                    if (btn) { btn.click(); return `row btn: ${btn.textContent?.trim()}`; }
+                }
+            }
+
+            // 方法C: href に /19 または /19/edit を含むリンク
+            const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'));
+            const editLink = links.find(a => {
+                const h = a.getAttribute('href') || '';
+                return h.includes(`/${day}/edit`) || h.includes(`/${day}$`);
+            });
+            if (editLink) { editLink.click(); return `direct link: ${editLink.getAttribute('href')}`; }
+
+            return null;
+        }, { date: payload.targetDate, day: dayStr });
+
+        console.log(`[RPA] Edit click result: ${editClicked}`);
+        await page.waitForTimeout(3000);
+        await logPageState(page, 'timeclock_03_after_edit_click');
+
+        // ── Step 4: 時刻入力フィールドを収集 ─────────────────────────────
+        const dumpInputs = async () => {
+            return page.evaluate(() => {
+                return Array.from(document.querySelectorAll<HTMLInputElement>('input, [contenteditable="true"]'))
+                    .filter(el => {
+                        if (el instanceof HTMLInputElement && ['hidden', 'checkbox', 'radio', 'file', 'submit', 'button'].includes(el.type)) return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    })
+                    .map(el => ({
+                        tag: el.tagName,
+                        id: (el as any).id,
+                        name: (el as HTMLInputElement).name,
+                        placeholder: (el as HTMLInputElement).placeholder,
+                        value: (el as HTMLInputElement).value,
+                        ariaLabel: el.getAttribute('aria-label') || '',
+                        textContent: el.textContent?.trim().slice(0, 30) || '',
+                        sel: (el as any).id ? `#${(el as any).id}` : ((el as HTMLInputElement).name ? `input[name="${(el as HTMLInputElement).name}"]` : ''),
+                    }));
+            });
+        };
+
+        const timeInputs = await dumpInputs();
+        console.log('[RPA] All visible inputs:', JSON.stringify(timeInputs));
+
+        const findTimeSel = (fields: typeof timeInputs, keywords: string[]): string | null => {
+            for (const kw of keywords) {
+                const found = fields.find(f =>
+                    f.ariaLabel.includes(kw) || f.placeholder.includes(kw) ||
+                    f.name.includes(kw) || f.id.includes(kw) || f.textContent.includes(kw)
+                );
+                if (found?.sel) return found.sel;
+            }
+            return null;
+        };
+
+        const clockInSel  = findTimeSel(timeInputs, ['clock_in', 'clockIn', '出勤', '開始', 'work_start', 'start']);
+        const clockOutSel = findTimeSel(timeInputs, ['clock_out', 'clockOut', '退勤', '終了', 'work_end', 'end']);
+
+        if (clockInSel) {
+            await fillInputReliably(page, clockInSel, payload.clockIn);
+            console.log(`[RPA] Clock-in filled: ${payload.clockIn} -> ${clockInSel}`);
+        } else {
+            console.warn('[RPA] Clock-in field not found by label, trying positional...');
+            if (timeInputs[0]?.sel) await fillInputReliably(page, timeInputs[0].sel, payload.clockIn);
+        }
+
+        if (clockOutSel) {
+            await fillInputReliably(page, clockOutSel, payload.clockOut);
+            console.log(`[RPA] Clock-out filled: ${payload.clockOut} -> ${clockOutSel}`);
+        } else {
+            console.warn('[RPA] Clock-out field not found by label, trying positional...');
+            if (timeInputs[1]?.sel) await fillInputReliably(page, timeInputs[1].sel, payload.clockOut);
+        }
+
+        // 休憩時間の入力
+        for (let i = 0; i < payload.breaks.length; i++) {
+            const brk = payload.breaks[i];
+            console.log(`[RPA] Filling break[${i}]: ${brk.start}-${brk.end}`);
+
+            if (i > 0) {
+                const addBreakBtn = await page.$('button:has-text("休憩を追加"), button:has-text("追加"), button[aria-label*="休憩"]');
+                if (addBreakBtn) {
+                    await addBreakBtn.click();
+                    await page.waitForTimeout(500);
+                    console.log(`[RPA] Break add button clicked for break[${i}]`);
+                }
+            }
+
+            const updatedInputs = await dumpInputs();
+            const breakStartSel = findTimeSel(updatedInputs, [`break_begin_${i}`, `break_start_${i}`, '休憩開始', 'break_start', 'break_begin']);
+            const breakEndSel   = findTimeSel(updatedInputs, [`break_end_${i}`, '休憩終了', 'break_end']);
+
+            if (breakStartSel) { await fillInputReliably(page, breakStartSel, brk.start); console.log(`[RPA] Break[${i}] start: ${brk.start}`); }
+            if (breakEndSel)   { await fillInputReliably(page, breakEndSel,   brk.end);   console.log(`[RPA] Break[${i}] end:   ${brk.end}`); }
+        }
+
+        await logPageState(page, 'timeclock_05_before_save');
+
+        // ── Step 6: 保存ボタンをクリック ────────────────────────────────
+        const saveBtnSel = await findSelector(page, [
+            'button:has-text("保存")',
+            'button:has-text("登録")',
+            'button:has-text("確定")',
+            'button:has-text("更新")',
+            'button[type="submit"]:not([disabled])',
+            '.vb-button--appearancePrimary:not(.vb-button--disabled)',
+        ], 5000);
+
+        if (!saveBtnSel) {
+            await logPageState(page, 'timeclock_save_btn_not_found');
+            // 保存ボタンが見つからない場合、現在ページの状態をすべてダンプ
+            const pageText = await page.evaluate(() => document.body?.textContent?.slice(0, 3000) || '');
+            console.warn('[RPA] Page text when save not found:', pageText);
+            const allBtns = await page.evaluate(() =>
+                Array.from(document.querySelectorAll('button, [role="button"]'))
+                    .map(b => ({ text: b.textContent?.trim(), cls: b.className }))
+            );
+            console.warn('[RPA] All buttons:', JSON.stringify(allBtns));
+            throw new Error('保存ボタンが見つかりませんでした。ログのボタン一覧・スクリーンショットを確認してください。');
+        }
+
+        await page.click(saveBtnSel);
+        console.log('[RPA] Save button clicked.');
+        await page.waitForTimeout(2000);
+
+        const errText = await page.evaluate(() =>
+            document.querySelector('.vb-message__content, .vb-flash--error, [role="alert"]')?.textContent || null
+        );
+        if (errText && (errText.includes('エラー') || errText.includes('失敗') || errText.includes('必須'))) {
+            throw new Error(errText.trim());
+        }
+
+        await logPageState(page, 'timeclock_06_after_save');
+        console.log('[RPA] TimeClock submission successful!');
+        return { success: true, message: 'Web経由で打刻を登録しました。' };
+
+    } catch (error: any) {
+        console.error('[RPA] TimeClock Error:', error.message);
+        await logPageState(page, `timeclock_error_${Date.now()}`);
+        if (error.message.includes('ログイン') || error.message.includes('タイムアウト')) {
+            try { fs.unlinkSync(SESSION_PATH); } catch { /* ignore */ }
+        }
+        throw new Error(`打刻自動操作中にエラーが発生しました: ${error.message}`);
     } finally {
         console.log('[RPA] Closing browser.');
         await browser.close();
@@ -829,27 +1115,51 @@ export async function submitPaidLeaveViaBrowser(payload: PaidLeavePayload & { he
         console.log('[RPA] Submitting paid leave...');
         await page.click(enabledSubmitSel);
 
-        // 申請後に「申請を取り下げる」ボタンを待つ（タイムアウトは無視）
-        await page.waitForSelector('button:has-text("申請を取り下げる")', { state: 'visible', timeout: 15000 }).catch(() => {
-            console.log('[RPA] withdraw button not found (ignored)');
+        // 申請後、成功またはエラーを待つ
+        await page.waitForTimeout(2000);
+
+        // エラーメッセージ確認（freee の各種エラー表示に対応）
+        const vbErrorText = await page.evaluate(() => {
+            const msgBlock = document.querySelector('.vb-messageBlock__inner--alert .vb-messageBlockInternalMessage__content');
+            if (msgBlock?.textContent?.trim()) return msgBlock.textContent.trim();
+            const msgContent = document.querySelector('.vb-message__content');
+            if (msgContent?.textContent?.trim()) return msgContent.textContent.trim();
+            const flash = document.querySelector('.vb-flash--error');
+            if (flash?.textContent?.trim()) return flash.textContent.trim();
+            const alert = document.querySelector('[role="alert"]');
+            if (alert?.textContent?.trim()) return alert.textContent.trim();
+            return null;
         });
 
-        // エラーメッセージ（申請済み・承認済み等）を確認
-        // ※ freee は成功後にも .vb-message__content でお知らせを表示するため
-        //    エラー固有のキーワードが含まれる場合のみ失敗とみなす
-        const vbErrorText = await page.evaluate(() => document.querySelector('.vb-message__content')?.textContent || null);
-        const isActualError = vbErrorText && (
+        if (vbErrorText && (
+            vbErrorText.includes('申請できませんでした') ||
             vbErrorText.includes('すでに') ||
             vbErrorText.includes('申請中もしくは承認') ||
             vbErrorText.includes('エラー') ||
-            vbErrorText.includes('失敗')
-        );
-        if (isActualError) {
-            console.warn(`[RPA] Form error: ${vbErrorText!.trim()}`);
-            throw new Error(vbErrorText!.trim());
+            vbErrorText.includes('失敗') ||
+            vbErrorText.includes('必須') ||
+            vbErrorText.includes('修正')
+        )) {
+            console.warn(`[RPA] Form error: ${vbErrorText}`);
+            throw new Error(vbErrorText);
         }
-        if (vbErrorText?.trim()) {
-            console.log(`[RPA] Info message (not error): ${vbErrorText.trim()}`);
+
+        // 成功確認
+        const withdrawBtnFound = await page.waitForSelector(
+            'button:has-text("申請を取り下げる")',
+            { state: 'visible', timeout: 10000 }
+        ).catch(() => null);
+
+        if (!withdrawBtnFound) {
+            const lateError = await page.evaluate(() => {
+                const el = document.querySelector('.vb-messageBlock__inner--alert .vb-messageBlockInternalMessage__content, .vb-message__content, [role="alert"]');
+                return el?.textContent?.trim() || null;
+            });
+            if (lateError) {
+                console.warn(`[RPA] Late error detected: ${lateError}`);
+                throw new Error(lateError);
+            }
+            console.log('[RPA] withdraw button not found, but no error detected.');
         }
 
         console.log('[RPA] Paid leave application successful!');

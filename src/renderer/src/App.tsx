@@ -5,6 +5,7 @@ import { PaidLeave } from './components/PaidLeave'
 import { MyRequests } from './components/MyRequests'
 import { Settings } from './components/Settings'
 import { MonthlyClose } from './components/MonthlyClose'
+// import { TimeClock } from './components/TimeClock'  // v1.0.8 以降で有効化
 
 type MainView = 'overtime' | 'paid-leave' | 'monthly-close' | 'my-requests'
 

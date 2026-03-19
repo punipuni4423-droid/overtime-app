@@ -23,6 +23,9 @@ interface Window {
     storeGet: (key: string) => Promise<any>
     storeSet: (key: string, value: any) => Promise<void>
 
+    // ユーザー情報（API自動解決）
+    getUserInfo: () => Promise<{ companyId: number; applicantId: number; employeeId: number }>
+
     // API calls (token auto-managed)
     fetchRoutes: (companyId: number) => Promise<any>
     fetchDepartments: (companyId: number) => Promise<any>

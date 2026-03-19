@@ -56,38 +56,38 @@ export function MyRequests() {
     const [items, setItems] = useState<MyRequest[]>([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
-    const [companyId, setCompanyId] = useState<number | null>(null)
     const [filterType, setFilterType] = useState<FilterType>('in_progress')
     const [selected, setSelected] = useState<Set<string>>(new Set())
     const [operating, setOperating] = useState(false)
     const [opProgress, setOpProgress] = useState<{ current: number; total: number } | null>(null)
     const [opError, setOpError] = useState<string | null>(null)
     const [opSuccess, setOpSuccess] = useState<string | null>(null)
-
-    useEffect(() => {
-        window.api.storeGet('COMPANY_ID').then((id: any) => setCompanyId(Number(id)))
-    }, [])
+    const [companyId, setCompanyId] = useState(0)
 
     const fetchRequests = useCallback(async () => {
-        if (!companyId) return
         setLoading(true)
         setError(null)
         setSelected(new Set())
         setOpError(null)
         setOpSuccess(null)
         try {
-            const data = await (window.api as any).fetchMyRequests(companyId)
+            // ユーザー情報を取得（companyId を削除APIで使用）
+            try {
+                const info = await window.api.getUserInfo()
+                setCompanyId(info.companyId)
+            } catch { /* ignore */ }
+            const data = await (window.api as any).fetchMyRequests()
             setItems(data || [])
         } catch (err: any) {
             setError(err.message)
         } finally {
             setLoading(false)
         }
-    }, [companyId])
+    }, [])
 
     useEffect(() => {
-        if (companyId) fetchRequests()
-    }, [companyId, fetchRequests])
+        fetchRequests()
+    }, [fetchRequests])
 
     const filteredItems = filterType === 'all' ? items : items.filter(item => item.status === filterType)
 
@@ -146,13 +146,13 @@ export function MyRequests() {
                     // in_progress のみここに来る
                     await (window.api as any).cancelRequestWeb({ requestType: item.type, requestId: item.id })
                 } else {
-                    // draft → REST API直接削除（高速）
-                    // in_progress → ブラウザで「取り下げ→削除」の2ステップ
-                    if (item.status === 'draft') {
-                        await (window.api as any).deleteRequestApi({ requestType: item.type, requestId: item.id, companyId })
-                    } else {
-                        await (window.api as any).deleteRequestWeb({ requestType: item.type, requestId: item.id })
+                    // 削除処理
+                    if (item.status === 'in_progress') {
+                        // in_progress → まず RPA で取り下げ、次に API で削除
+                        await (window.api as any).cancelRequestWeb({ requestType: item.type, requestId: item.id })
                     }
+                    // draft（または取り下げ直後） → REST API で削除
+                    await (window.api as any).deleteRequestApi({ requestType: item.type, requestId: item.id, companyId })
                 }
                 successCount++
             } catch (err: any) {

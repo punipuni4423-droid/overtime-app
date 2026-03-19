@@ -221,22 +221,24 @@ export function Dashboard() {
         setDateTo(todayStr)
 
         async function init() {
-            const c = await window.api.storeGet('COMPANY_ID')
-            const a = await window.api.storeGet('APPLICANT_ID')
+            let cId = 0
+            try {
+                const info = await window.api.getUserInfo()
+                cId = info.companyId
+                setCompanyId(info.companyId)
+                setApplicantId(info.applicantId)
+            } catch { /* トークン未設定時は 0 のまま */ }
             const lastEnd = await window.api.storeGet('LAST_END_TIME')
             const lastRoute = await window.api.storeGet('LAST_ROUTE_ID')
             const lastComm = await window.api.storeGet('last_comment')
-
-            setCompanyId(Number(c) || 0)
-            setApplicantId(Number(a) || 0)
             if (lastEnd) setEndAt(lastEnd)
             if (lastComm) setComment(lastComm)
 
             const tokenResult = await window.api.getValidToken()
 
-            if (tokenResult.success && c) {
+            if (tokenResult.success && cId) {
                 try {
-                    const rts = await fetchRoutes(Number(c))
+                    const rts = await fetchRoutes(cId)
                     setRoutes(rts)
                     if (lastRoute && rts.some(r => r.id === lastRoute)) {
                         setSelectedRouteId(lastRoute)
@@ -248,7 +250,7 @@ export function Dashboard() {
                 }
             } else if (tokenResult.authRequired) {
                 setFetchError(tokenResult.message || "認証が必要です。設定画面からOAuth認証を行ってください。")
-            } else if (!c) {
+            } else if (!cId) {
                 setFetchError("初期設定が完了していません。右上の設定画面から入力してください。")
             }
 
@@ -312,6 +314,7 @@ export function Dashboard() {
     }
 
     const isConfigured = companyId && applicantId && hasToken
+    const isCommentEmpty = !comment.trim()
 
     const buttonLabel = () => {
         if (loading && batchProgress) return `申請中...（${batchProgress.current}/${batchProgress.total}）`
@@ -341,7 +344,10 @@ export function Dashboard() {
                         </div>
 
                         {!rangeMode ? (
-                            <DateStepper value={date} onChange={setDate} />
+                            <>
+                                <DateStepper value={date} onChange={setDate} />
+                                <div className="mt-1.5 h-4" />
+                            </>
                         ) : (
                             <div className="space-y-2">
                                 <div className="flex items-center gap-1.5">
@@ -395,8 +401,10 @@ export function Dashboard() {
 
                     {/* ─── Comment ─── */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">残業理由（コメント）</label>
-                        <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="残業理由を入力してください" rows={2} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none resize-none text-sm" />
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                            申請理由（コメント）<span className="text-red-500 ml-0.5">*</span>
+                        </label>
+                        <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="申請理由を入力してください（必須）" rows={2} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none resize-none text-sm" />
                     </div>
 
                     {/* ─── Route ─── */}
@@ -471,7 +479,7 @@ export function Dashboard() {
             <div className="mt-3">
                 <button
                     onClick={handleSubmit}
-                    disabled={loading || !isConfigured || !selectedRouteId || (rangeMode && previewDates.length === 0)}
+                    disabled={loading || !isConfigured || !selectedRouteId || isCommentEmpty || (rangeMode && previewDates.length === 0)}
                     className="w-full bg-[#007B7E] hover:bg-[#006669] text-white disabled:bg-gray-300 disabled:cursor-not-allowed p-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.98]"
                 >
                     {loading ? (

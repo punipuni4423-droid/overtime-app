@@ -170,13 +170,17 @@ export function PaidLeave() {
         setDateTo(todayStr)
 
         async function init() {
-            const c = await window.api.storeGet('COMPANY_ID')
-            setCompanyId(Number(c) || 0)
+            let cId = 0
+            try {
+                const info = await window.api.getUserInfo()
+                cId = info.companyId
+                setCompanyId(info.companyId)
+            } catch { /* トークン未設定時は 0 のまま */ }
 
             const tokenResult = await window.api.getValidToken()
-            if (tokenResult.success && c) {
+            if (tokenResult.success && cId) {
                 try {
-                    const rts = await fetchRoutes(Number(c))
+                    const rts = await fetchRoutes(cId)
                     setRoutes(rts)
                     const lastRoute = await window.api.storeGet('LAST_PAID_LEAVE_ROUTE_ID')
                     if (lastRoute && rts.some((r: Route) => r.id === lastRoute)) setSelectedRouteId(lastRoute)
@@ -184,7 +188,7 @@ export function PaidLeave() {
                 } catch {
                     setFetchError('経路の取得に失敗しました。設定を確認してください。')
                 }
-            } else if (!c) {
+            } else if (!cId) {
                 setFetchError('初期設定が完了していません。設定画面から入力してください。')
             }
             const status = await window.api.getTokenStatus()
@@ -224,6 +228,10 @@ export function PaidLeave() {
     }
 
     const isConfigured = companyId && hasToken
+    // 単日モード: 土日祝日は申請不可
+    const isSingleDateHoliday = !rangeMode && date && isNonBusinessDay(date)
+    // コメント必須
+    const isCommentEmpty = !comment.trim()
 
     const buttonLabel = () => {
         if (loading && batchProgress) return `申請中...（${batchProgress.current}/${batchProgress.total}）`
@@ -253,7 +261,12 @@ export function PaidLeave() {
                         </div>
 
                         {!rangeMode ? (
-                            <DateStepper value={date} onChange={setDate} />
+                            <>
+                                <DateStepper value={date} onChange={setDate} />
+                                <p className={`mt-1.5 text-xs flex items-center gap-1 h-4 ${isSingleDateHoliday ? 'text-amber-600' : 'text-transparent'}`}>
+                                    <AlertTriangle size={12} />土日祝日は有給申請できません
+                                </p>
+                            </>
                         ) : (
                             <div className="space-y-2">
                                 <div className="flex items-center gap-1.5">
@@ -292,7 +305,7 @@ export function PaidLeave() {
                                     key={unit}
                                     type="button"
                                     onClick={() => setLeaveUnit(unit)}
-                                    className={`py-2.5 text-sm font-semibold rounded-lg border transition-all ${
+                                    className={`py-3 text-sm font-semibold rounded-lg border transition-all ${
                                         leaveUnit === unit
                                             ? 'bg-[#007B7E] text-white border-[#007B7E]'
                                             : 'bg-white text-gray-600 border-gray-300 hover:border-[#007B7E] hover:text-[#007B7E]'
@@ -306,8 +319,10 @@ export function PaidLeave() {
 
                     {/* ─── Comment ─── */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">申請理由（コメント）</label>
-                        <textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="申請理由を入力してください" rows={2} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none resize-none text-sm" />
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                            申請理由（コメント）<span className="text-red-500 ml-0.5">*</span>
+                        </label>
+                        <textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="申請理由を入力してください（必須）" rows={2} className={`w-full p-3 border rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none resize-none text-sm ${isCommentEmpty ? 'border-gray-300' : 'border-gray-300'}`} />
                     </div>
 
                     {/* ─── Route ─── */}
@@ -362,7 +377,7 @@ export function PaidLeave() {
             <div className="mt-3">
                 <button
                     onClick={handleSubmit}
-                    disabled={loading || !isConfigured || !selectedRouteId || (rangeMode && previewDates.length === 0)}
+                    disabled={loading || !isConfigured || !selectedRouteId || isCommentEmpty || isSingleDateHoliday || (rangeMode && previewDates.length === 0)}
                     className="w-full bg-[#007B7E] hover:bg-[#006669] text-white disabled:bg-gray-300 disabled:cursor-not-allowed p-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.98]"
                 >
                     {loading ? (

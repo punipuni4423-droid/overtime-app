@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Send, CheckCircle, AlertTriangle, ChevronLeft, ChevronRight, LogIn, RefreshCw, Clock } from 'lucide-react'
+import { Send, CheckCircle, AlertTriangle, LogIn, RefreshCw, Clock } from 'lucide-react'
 import { useFreee, Route } from '../hooks/useFreee'
 import { DEPARTMENTS } from '../utils/departments'
 import { isNonBusinessDay } from '../utils/holidays'
@@ -83,44 +83,6 @@ function getNextWindowStart(today: Date): { date: Date; month: number; year: num
     return { date: nextWindowStart, month: nextMonth, year: nextYear }
 }
 
-function MonthStepper({
-    year,
-    month,
-    onChange,
-}: {
-    year: number
-    month: number
-    onChange: (year: number, month: number) => void
-}) {
-    const handlePrev = () => {
-        if (month === 1) onChange(year - 1, 12)
-        else onChange(year, month - 1)
-    }
-    const handleNext = () => {
-        if (month === 12) onChange(year + 1, 1)
-        else onChange(year, month + 1)
-    }
-
-    const btnBase =
-        'flex items-center justify-center w-9 border-y border-r border-gray-300 bg-white text-gray-400 hover:text-[#007B7E] hover:bg-[#f0fafa] active:bg-[#e0f5f5] transition-colors'
-
-    return (
-        <div className="flex items-stretch">
-            <div className="flex-1 px-3 py-2.5 border border-gray-300 rounded-l-xl text-sm bg-white flex items-center">
-                <span className="font-semibold text-gray-700">
-                    {year}年{String(month).padStart(2, '0')}月
-                </span>
-            </div>
-            <button type="button" onClick={handlePrev} className={btnBase} title="前月">
-                <ChevronLeft size={14} strokeWidth={2.5} />
-            </button>
-            <button type="button" onClick={handleNext} className={`${btnBase} rounded-r-xl`} title="翌月">
-                <ChevronRight size={14} strokeWidth={2.5} />
-            </button>
-        </div>
-    )
-}
-
 export function MonthlyClose() {
     const { fetchRoutes, loading } = useFreee()
 
@@ -128,8 +90,8 @@ export function MonthlyClose() {
     // 申請可能期間を判定し、対象月（当月）をデフォルトに設定
     const period = checkApplicationPeriod(now)
 
-    const [year, setYear] = useState(period.targetYear)
-    const [month, setMonth] = useState(period.targetMonth)
+    const year = period.targetYear
+    const month = period.targetMonth
     const [comment, setComment] = useState('')
 
     const [routes, setRoutes] = useState<Route[]>([])
@@ -150,17 +112,19 @@ export function MonthlyClose() {
 
     useEffect(() => {
         async function init() {
-            const c = await window.api.storeGet('COMPANY_ID')
-            const a = await window.api.storeGet('APPLICANT_ID')
+            let cId = 0
+            try {
+                const info = await window.api.getUserInfo()
+                cId = info.companyId
+                setCompanyId(info.companyId)
+                setApplicantId(info.applicantId)
+            } catch { /* トークン未設定時は 0 のまま */ }
             const lastRoute = await window.api.storeGet('LAST_MONTHLY_CLOSE_ROUTE_ID')
 
-            setCompanyId(Number(c) || 0)
-            setApplicantId(Number(a) || 0)
-
             const tokenResult = await window.api.getValidToken()
-            if (tokenResult.success && c) {
+            if (tokenResult.success && cId) {
                 try {
-                    const rts = await fetchRoutes(Number(c))
+                    const rts = await fetchRoutes(cId)
                     setRoutes(rts)
                     if (lastRoute && rts.some(r => r.id === lastRoute)) {
                         setSelectedRouteId(lastRoute)
@@ -172,7 +136,7 @@ export function MonthlyClose() {
                 }
             } else if (tokenResult.authRequired) {
                 setFetchError(tokenResult.message || '認証が必要です。設定画面からOAuth認証を行ってください。')
-            } else if (!c) {
+            } else if (!cId) {
                 setFetchError('初期設定が完了していません。右上の設定画面から入力してください。')
             }
 
@@ -258,17 +222,13 @@ export function MonthlyClose() {
                 )}
 
                 <div className="space-y-4">
-                    {/* 対象年月 */}
+                    {/* 対象年月（今日の日付から自動決定） */}
                     <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">対象年月</label>
-                        <MonthStepper
-                            year={year}
-                            month={month}
-                            onChange={(y, m) => {
-                                setYear(y)
-                                setMonth(m)
-                            }}
-                        />
+                        <div className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 font-semibold text-gray-700">
+                            {year}年{String(month).padStart(2, '0')}月
+                            <span className="ml-2 text-xs text-gray-400 font-normal">（自動取得）</span>
+                        </div>
                     </div>
 
                     {/* コメント */}

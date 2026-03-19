@@ -21,6 +21,15 @@ const api = {
   submitMonthlyClose: (payload: any) => ipcRenderer.invoke('api-submit-monthly-close', payload),
   submitMonthlyCloseWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-monthly-close', payload),
 
+  // 打刻
+  fetchTimeClocks: (payload: any) => ipcRenderer.invoke('api-fetch-time-clocks', payload),
+  fetchAvailableClockTypes: (payload: any) => ipcRenderer.invoke('api-fetch-available-clock-types', payload),
+  submitTimeClock: (payload: any) => ipcRenderer.invoke('api-submit-time-clock', payload),
+  submitTimeClockWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-time-clock', payload),
+
+  // ユーザー情報取得（companyId, applicantId, employeeId を API から自動解決）
+  getUserInfo: () => ipcRenderer.invoke('api-get-user-info'),
+
   // Web pre-login
   preLogin: () => ipcRenderer.invoke('api-pre-login'),
 
