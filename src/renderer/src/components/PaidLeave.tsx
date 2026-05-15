@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Send, CheckCircle, CalendarRange, AlertTriangle, ChevronLeft, ChevronRight, Calendar } from 'lucide-react'
+import { Send, CheckCircle, CalendarRange, AlertTriangle, ChevronLeft, ChevronRight, Calendar, X } from 'lucide-react'
 import { useFreee, Route, BatchResult } from '../hooks/useFreee'
+import { useLoginVerified, checkLoginGate } from '../hooks/useLoginVerified'
 import { isNonBusinessDay } from '../utils/holidays'
 import { DEPARTMENTS } from '../utils/departments'
 import DatePicker, { registerLocale } from 'react-datepicker'
@@ -48,13 +49,7 @@ function generateDateList(startDate: string, endDate: string, excludeHolidays: b
     return dates
 }
 
-type LeaveUnit = 'full_day' | 'am_half' | 'pm_half'
-
-const LEAVE_UNIT_LABELS: Record<LeaveUnit, string> = {
-    full_day: '全休',
-    am_half:  '午前休',
-    pm_half:  '午後休',
-}
+import { type LeaveUnit, LEAVE_UNIT_LABELS } from '../../../shared/leaveUnit'
 
 function DateStepper({ value, onChange, startDate, endDate }: {
     value: string
@@ -122,7 +117,8 @@ function DateStepper({ value, onChange, startDate, endDate }: {
 }
 
 export function PaidLeave() {
-    const { fetchRoutes, submitPaidLeaveWeb, submitPaidLeaveBatch, loading, error, batchProgress } = useFreee()
+    const { fetchRoutes, submitPaidLeaveWeb, submitPaidLeaveBatch, loading, error, clearError, batchProgress } = useFreee()
+    const { status: loginStatus } = useLoginVerified()
 
     const [companyId, setCompanyId] = useState(0)
 
@@ -199,6 +195,11 @@ export function PaidLeave() {
 
     const handleSubmit = async () => {
         if (!companyId || !selectedRouteId) return
+        const gate = checkLoginGate(loginStatus)
+        if (!gate.ok) {
+            window.alert(gate.message || 'メールアドレス・パスワードを確認してください。')
+            return
+        }
         setSuccess(false)
         setBatchResult(null)
 
@@ -305,10 +306,10 @@ export function PaidLeave() {
                                     key={unit}
                                     type="button"
                                     onClick={() => setLeaveUnit(unit)}
-                                    className={`py-3 text-sm font-semibold rounded-lg border transition-all ${
+                                    className={`py-3 text-sm font-semibold rounded-lg border-2 transition-all ${
                                         leaveUnit === unit
-                                            ? 'bg-[#007B7E] text-white border-[#007B7E]'
-                                            : 'bg-white text-gray-600 border-gray-300 hover:border-[#007B7E] hover:text-[#007B7E]'
+                                            ? 'bg-[#007B7E] text-white border-[#007B7E] shadow-md ring-2 ring-[#007B7E]/30'
+                                            : 'bg-white text-gray-600 border-gray-200 hover:border-[#007B7E] hover:text-[#007B7E]'
                                     }`}
                                 >
                                     {LEAVE_UNIT_LABELS[unit]}
@@ -343,8 +344,11 @@ export function PaidLeave() {
 
                     {/* ─── Error ─── */}
                     {(error && !success) && (
-                        <div className="bg-red-50 text-red-700 p-3 rounded-xl text-sm border border-red-200 break-words">
-                            <strong>エラー:</strong> {error}
+                        <div className="bg-red-50 text-red-700 p-3 rounded-xl text-sm border border-red-200 break-words flex items-start gap-2">
+                            <span className="flex-1"><strong>エラー:</strong> {error}</span>
+                            <button onClick={clearError} className="shrink-0 p-0.5 hover:bg-red-100 rounded transition-colors" title="閉じる">
+                                <X size={14} />
+                            </button>
                         </div>
                     )}
 

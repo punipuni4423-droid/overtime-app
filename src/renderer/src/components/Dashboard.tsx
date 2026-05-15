@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Clock, Send, CheckCircle, CalendarRange, AlertTriangle, ChevronLeft, ChevronRight, Calendar, LogIn, RefreshCw } from 'lucide-react'
+import { Clock, Send, CheckCircle, CalendarRange, AlertTriangle, ChevronLeft, ChevronRight, Calendar, LogIn, RefreshCw, X } from 'lucide-react'
 import { useFreee, Route, BatchResult, API_RESTRICTION_ERROR } from '../hooks/useFreee'
+import { useLoginVerified, checkLoginGate } from '../hooks/useLoginVerified'
 
 import { isNonBusinessDay } from '../utils/holidays'
 import { DEPARTMENTS } from '../utils/departments'
@@ -150,7 +151,8 @@ function DateStepper({
 
 // ─── Main Dashboard ─────────────────────────────────────────────
 export function Dashboard() {
-    const { fetchRoutes, fetchDepartments, submitOvertime, submitOvertimeWeb, submitBatch, loading, error, batchProgress } = useFreee()
+    const { fetchRoutes, fetchDepartments, submitOvertime, submitOvertimeWeb, submitBatch, loading, error, clearError, batchProgress } = useFreee()
+    const { status: loginStatus } = useLoginVerified()
 
     const [companyId, setCompanyId] = useState(0)
     const [applicantId, setApplicantId] = useState(0)
@@ -262,6 +264,12 @@ export function Dashboard() {
 
     const handleSubmit = async () => {
         if (!companyId || !applicantId || !selectedRouteId) return
+        // ログイン未確認時は警告を出して中断（ロック防止）
+        const gate = checkLoginGate(loginStatus)
+        if (!gate.ok) {
+            window.alert(gate.message || 'メールアドレス・パスワードを確認してください。')
+            return
+        }
         setSuccess(false)
         setBatchResult(null)
 
@@ -444,8 +452,11 @@ export function Dashboard() {
                     {/* ─── Error ─── */}
 
                     {(error && !success) && (
-                        <div className="bg-red-50 text-red-700 p-3 rounded-xl text-sm border border-red-200 break-words">
-                            <strong>エラー:</strong> {error}
+                        <div className="bg-red-50 text-red-700 p-3 rounded-xl text-sm border border-red-200 break-words flex items-start gap-2">
+                            <span className="flex-1"><strong>エラー:</strong> {error}</span>
+                            <button onClick={clearError} className="shrink-0 p-0.5 hover:bg-red-100 rounded transition-colors" title="閉じる">
+                                <X size={14} />
+                            </button>
                         </div>
                     )}
 

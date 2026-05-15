@@ -6,18 +6,44 @@ const api = {
   storeGet: (key: string) => ipcRenderer.invoke('store-get', key),
   storeSet: (key: string, value: any) => ipcRenderer.invoke('store-set', key, value),
 
+  // ID→名前マッピング
+  nameMapGetAll: () => ipcRenderer.invoke('name-map-get-all'),
+  nameMapSet: (id: string, name: string) => ipcRenderer.invoke('name-map-set', id, name),
+  nameMapDelete: (id: string) => ipcRenderer.invoke('name-map-delete', id),
+  nameMapClear: () => ipcRenderer.invoke('name-map-clear'),
+
   // API calls (token is now managed automatically in main process)
   fetchRoutes: (companyId: number) => ipcRenderer.invoke('api-fetch-routes', companyId),
   fetchDepartments: (companyId: number) => ipcRenderer.invoke('api-fetch-departments', companyId),
   submitOvertime: (payload: any) => ipcRenderer.invoke('api-submit-overtime', payload),
   submitOvertimeWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-overtime', payload),
-  fetchApprovals: (companyId: number) => ipcRenderer.invoke('api-fetch-approvals', companyId),
-  fetchMyRequests: (companyId: number) => ipcRenderer.invoke('api-fetch-my-requests', companyId),
+  submitOvertimeWebBatch: (payload: any) => ipcRenderer.invoke('api-web-submit-overtime-batch', payload),
+  onOvertimeBatchProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any): void => callback(progress)
+    ipcRenderer.on('overtime-batch-progress', listener)
+    return () => ipcRenderer.removeListener('overtime-batch-progress', listener)
+  },
+  fetchApprovals: (options?: { limit?: number; statuses?: string[] }) =>
+    ipcRenderer.invoke('api-fetch-approvals', options),
+  fetchMyRequests: (options?: { months?: number }) =>
+    ipcRenderer.invoke('api-fetch-my-requests', options),
   cancelRequestWeb: (payload: any) => ipcRenderer.invoke('api-cancel-request-web', payload),
   deleteRequestWeb: (payload: any) => ipcRenderer.invoke('api-delete-request-web', payload),
+  cancelRequestWebBatch: (payload: any) => ipcRenderer.invoke('api-cancel-request-web-batch', payload),
+  onCancelBatchProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any): void => callback(progress)
+    ipcRenderer.on('cancel-batch-progress', listener)
+    return () => ipcRenderer.removeListener('cancel-batch-progress', listener)
+  },
   deleteRequestApi: (payload: any) => ipcRenderer.invoke('api-delete-request-api', payload),
   submitPaidLeave: (payload: any) => ipcRenderer.invoke('api-submit-paid-leave', payload),
   submitPaidLeaveWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-paid-leave', payload),
+  submitPaidLeaveWebBatch: (payload: any) => ipcRenderer.invoke('api-web-submit-paid-leave-batch', payload),
+  onPaidLeaveBatchProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any): void => callback(progress)
+    ipcRenderer.on('paid-leave-batch-progress', listener)
+    return () => ipcRenderer.removeListener('paid-leave-batch-progress', listener)
+  },
   submitMonthlyClose: (payload: any) => ipcRenderer.invoke('api-submit-monthly-close', payload),
   submitMonthlyCloseWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-monthly-close', payload),
 
@@ -32,6 +58,22 @@ const api = {
 
   // Web pre-login
   preLogin: () => ipcRenderer.invoke('api-pre-login'),
+
+  // ログイン確認
+  verifyLogin: (payload?: { email?: string; password?: string }) =>
+    ipcRenderer.invoke('api-verify-login', payload),
+  getLoginVerified: () => ipcRenderer.invoke('api-get-login-verified'),
+  resetLoginVerified: () => ipcRenderer.invoke('api-reset-login-verified'),
+
+  // 承認 / 差戻し
+  approvalAction: (payload: any) => ipcRenderer.invoke('api-approval-action', payload),
+  approvalBatch: (payloads: any[], options?: { comment?: string; action?: 'approve' | 'feedback' }) =>
+    ipcRenderer.invoke('api-approval-batch', payloads, options),
+  onApprovalBatchProgress: (callback: (progress: { current: number; total: number; type: string; id: number }) => void) => {
+    const listener = (_e: any, progress: any): void => callback(progress)
+    ipcRenderer.on('approval-batch-progress', listener)
+    return () => ipcRenderer.removeListener('approval-batch-progress', listener)
+  },
 
   // Token management
   getValidToken: () => ipcRenderer.invoke('token-get-valid'),

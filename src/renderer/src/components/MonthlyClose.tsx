@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Send, CheckCircle, AlertTriangle, LogIn, RefreshCw, Clock } from 'lucide-react'
 import { useFreee, Route } from '../hooks/useFreee'
+import { useLoginVerified, checkLoginGate } from '../hooks/useLoginVerified'
 import { DEPARTMENTS } from '../utils/departments'
 import { isNonBusinessDay } from '../utils/holidays'
 
@@ -85,6 +86,7 @@ function getNextWindowStart(today: Date): { date: Date; month: number; year: num
 
 export function MonthlyClose() {
     const { fetchRoutes, loading } = useFreee()
+    const { status: loginStatus } = useLoginVerified()
 
     const now = new Date()
     // 申請可能期間を判定し、対象月（当月）をデフォルトに設定
@@ -150,6 +152,11 @@ export function MonthlyClose() {
 
     const handleSubmit = async () => {
         if (!companyId || !applicantId || !selectedRouteId) return
+        const gate = checkLoginGate(loginStatus)
+        if (!gate.ok) {
+            window.alert(gate.message || 'メールアドレス・パスワードを確認してください。')
+            return
+        }
         setIsSubmitting(true)
         setSubmitError(null)
         setSuccess(false)

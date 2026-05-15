@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Clock, CalendarDays, Trash2, RotateCcw, CheckSquare, Square } from 'lucide-react'
+import { RefreshCw, Clock, CalendarDays, Trash2, RotateCcw, CheckSquare, Square, X } from 'lucide-react'
 
 interface MyRequest {
     type: 'overtime' | 'paid_holiday' | 'monthly_attendance'
@@ -62,7 +62,7 @@ export function MyRequests() {
     const [opProgress, setOpProgress] = useState<{ current: number; total: number } | null>(null)
     const [opError, setOpError] = useState<string | null>(null)
     const [opSuccess, setOpSuccess] = useState<string | null>(null)
-    const [companyId, setCompanyId] = useState(0)
+    const [, setCompanyId] = useState(0)
 
     const fetchRequests = useCallback(async () => {
         setLoading(true)
@@ -135,42 +135,44 @@ export function MyRequests() {
         setOpSuccess(null)
         setOpProgress({ current: 0, total: itemsToProcess.length })
 
-        const errors: string[] = []
-        let successCount = 0
+        const unsubscribe = window.api.onCancelBatchProgress((p: any) => {
+            setOpProgress({ current: p.current, total: p.total })
+        })
 
-        for (let i = 0; i < itemsToProcess.length; i++) {
-            const item = itemsToProcess[i]
-            setOpProgress({ current: i + 1, total: itemsToProcess.length })
-            try {
-                if (action === 'withdraw') {
-                    // in_progress のみここに来る
-                    await (window.api as any).cancelRequestWeb({ requestType: item.type, requestId: item.id })
-                } else {
-                    // 削除処理
-                    if (item.status === 'in_progress') {
-                        // in_progress → まず RPA で取り下げ、次に API で削除
-                        await (window.api as any).cancelRequestWeb({ requestType: item.type, requestId: item.id })
-                    }
-                    // draft（または取り下げ直後） → REST API で削除
-                    await (window.api as any).deleteRequestApi({ requestType: item.type, requestId: item.id, companyId })
-                }
-                successCount++
-            } catch (err: any) {
-                errors.push(`${TYPE_LABEL[item.type]} ${formatTargetDate(item.type, item.targetDate)}: ${err.message}`)
+        try {
+            const batchItems = itemsToProcess.map((item) => ({
+                requestType: item.type as 'overtime' | 'paid_holiday' | 'monthly_attendance',
+                requestId: item.id,
+            }))
+
+            const result = await window.api.cancelRequestWebBatch({
+                items: batchItems,
+                action,
+            })
+
+            if (result.failed.length > 0) {
+                const errorMessages = result.failed.map((f) => {
+                    const item = itemsToProcess.find((i) => i.id === f.requestId)
+                    const label = item
+                        ? `${TYPE_LABEL[item.type]} ${formatTargetDate(item.type, item.targetDate)}`
+                        : `ID:${f.requestId}`
+                    return `${label}: ${f.error}`
+                })
+                setOpError(errorMessages.join('\n'))
             }
+            if (result.succeeded > 0) {
+                const actionLabel = action === 'withdraw' ? '取り下げ' : '削除'
+                setOpSuccess(`${result.succeeded}件の${actionLabel}が完了しました。`)
+                setTimeout(() => setOpSuccess(null), 5000)
+            }
+        } catch (err: any) {
+            setOpError(err.message || '実行に失敗しました')
+        } finally {
+            unsubscribe()
+            setOperating(false)
+            setOpProgress(null)
+            await fetchRequests()
         }
-
-        setOperating(false)
-        setOpProgress(null)
-
-        if (errors.length > 0) setOpError(errors.join('\n'))
-        if (successCount > 0) {
-            const actionLabel = action === 'withdraw' ? '取り下げ' : '削除'
-            setOpSuccess(`${successCount}件の${actionLabel}が完了しました。`)
-            setTimeout(() => setOpSuccess(null), 5000)
-        }
-
-        await fetchRequests()
     }
 
     return (
@@ -330,7 +332,12 @@ export function MyRequests() {
                         </div>
                     )}
                     {opError && (
-                        <div className="mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 whitespace-pre-wrap">{opError}</div>
+                        <div className="mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 whitespace-pre-wrap flex items-start gap-2">
+                            <span className="flex-1">{opError}</span>
+                            <button onClick={() => setOpError(null)} className="shrink-0 p-0.5 hover:bg-red-100 rounded transition-colors" title="閉じる">
+                                <X size={13} />
+                            </button>
+                        </div>
                     )}
                     {opSuccess && (
                         <div className="mb-2 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-700">{opSuccess}</div>

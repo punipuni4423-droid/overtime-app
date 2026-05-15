@@ -2,18 +2,18 @@ import { useState, useEffect } from 'react'
 import { Settings as SettingsIcon, Download } from 'lucide-react'
 import { Dashboard } from './components/Dashboard'
 import { PaidLeave } from './components/PaidLeave'
-import { MyRequests } from './components/MyRequests'
+import { Approvals } from './components/Approvals'
 import { Settings } from './components/Settings'
 import { MonthlyClose } from './components/MonthlyClose'
 // import { TimeClock } from './components/TimeClock'  // v1.0.8 以降で有効化
 
-type MainView = 'overtime' | 'paid-leave' | 'monthly-close' | 'my-requests'
+type MainView = 'overtime' | 'paid-leave' | 'monthly-close' | 'approvals'
 
 const TAB_LABELS: Record<MainView, string> = {
   'overtime': '残業申請',
   'paid-leave': '有給申請',
   'monthly-close': '月次締め',
-  'my-requests': '申請確認',
+  'approvals': '申請・承認',
 }
 
 function App() {
@@ -92,7 +92,7 @@ function App() {
         {view === 'overtime' && <Dashboard />}
         {view === 'paid-leave' && <PaidLeave />}
         {view === 'monthly-close' && <MonthlyClose />}
-        {view === 'my-requests' && <MyRequests />}
+        {view === 'approvals' && <Approvals />}
       </div>
     </div>
   )

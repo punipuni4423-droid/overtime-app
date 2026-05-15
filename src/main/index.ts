@@ -4,7 +4,7 @@ import axios from 'axios'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import { TokenManager, TokenAuthRequiredError } from './tokenManager'
-import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, submitTimeClockViaBrowser } from './automation'
+import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, cancelRequestBatchViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser } from './automation'
 
 const store = new Store({
   defaults: {
@@ -22,7 +22,11 @@ const store = new Store({
     refresh_token: '',
     created_at: 0,
     expires_in: 0,
-    expires_at: 0
+    expires_at: 0,
+    ID_NAME_MAP: {} as Record<string, string>,
+    LOGIN_VERIFIED: false,
+    LOGIN_VERIFIED_AT: 0,
+    LOGIN_VERIFIED_EMAIL: ''
   }
 })
 
@@ -61,9 +65,11 @@ let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 550,
+    width: 900,
     height: 800,
-    resizable: false,
+    minWidth: 550,
+    minHeight: 600,
+    resizable: true,
     show: false,
     autoHideMenuBar: true,
     title: 'freee申請ツール',
@@ -95,7 +101,7 @@ function createWindow(): void {
 // ─── RPA ヘッドレス設定 ───────────────────────────────────────────
 // 開発時(npm run dev): ブラウザ表示 (headless=false)
 // リリース版(パッケージ後): バックグラウンド (headless=true)
-const RPA_HEADLESS = true  // v1.0.7: 常にバックグラウンド動作（デバッグ時は false に変更）
+const RPA_HEADLESS = true  // バックグラウンド動作
 
 app.whenReady().then(() => {
   // Set app user model id for windows
@@ -137,6 +143,39 @@ app.whenReady().then(() => {
   // ─── Settings Store IPC ───────────────────────────────────────
   ipcMain.handle('store-get', (_, key) => store.get(key))
   ipcMain.handle('store-set', (_, key, val) => store.set(key, val))
+
+  // ─── ID→名前マッピング IPC ────────────────────────────────────
+  ipcMain.handle('name-map-get-all', (): Record<string, string> => {
+    return (store.get('ID_NAME_MAP') as Record<string, string>) || {}
+  })
+
+  ipcMain.handle(
+    'name-map-set',
+    (_, id: string, name: string): { success: boolean; message?: string } => {
+      const trimmedId = String(id || '').trim()
+      const trimmedName = String(name || '').trim()
+      if (!trimmedId) return { success: false, message: 'IDが空です' }
+      if (!trimmedName) return { success: false, message: '名前を入力してください' }
+      const current = (store.get('ID_NAME_MAP') as Record<string, string>) || {}
+      const updated: Record<string, string> = { ...current, [trimmedId]: trimmedName }
+      store.set('ID_NAME_MAP', updated)
+      return { success: true }
+    }
+  )
+
+  ipcMain.handle('name-map-delete', (_, id: string): { success: boolean } => {
+    const key = String(id || '').trim()
+    const current = (store.get('ID_NAME_MAP') as Record<string, string>) || {}
+    if (!(key in current)) return { success: true }
+    const { [key]: _removed, ...rest } = current
+    store.set('ID_NAME_MAP', rest)
+    return { success: true }
+  })
+
+  ipcMain.handle('name-map-clear', (): { success: boolean } => {
+    store.set('ID_NAME_MAP', {})
+    return { success: true }
+  })
 
   // ─── Token Management IPC ────────────────────────────────────
   // Get a valid access token (auto-refreshes if needed)
@@ -267,6 +306,259 @@ app.whenReady().then(() => {
     }
   })
 
+  // ─── ログイン確認 IPC（手動テスト用） ────────────────────────
+  // 設定画面の「ログイン確認」ボタンから呼び出される。
+  // 成功時のみ LOGIN_VERIFIED=true をストアに保存し、申請ボタンの活性化条件にする。
+  ipcMain.handle('api-verify-login', async (_, payload?: { email?: string; password?: string }) => {
+    const email = (payload?.email ?? (store.get('FREEE_EMAIL') as string) ?? '').trim()
+    const password = payload?.password ?? (store.get('FREEE_PASSWORD') as string) ?? ''
+    if (!email || !password) {
+      return { success: false, message: 'メールアドレスとパスワードを入力してください。' }
+    }
+    try {
+      await preLoginViaBrowser(email, password)
+      store.set('LOGIN_VERIFIED', true)
+      store.set('LOGIN_VERIFIED_AT', Date.now())
+      store.set('LOGIN_VERIFIED_EMAIL', email)
+      return { success: true, message: 'ログインに成功しました。', verifiedAt: Date.now() }
+    } catch (e: any) {
+      store.set('LOGIN_VERIFIED', false)
+      const message = e?.message || 'ログインに失敗しました。'
+      return { success: false, message }
+    }
+  })
+
+  // ─── ログイン確認状態取得 ────────────────────────────────────
+  // メールアドレスが変わっていれば未確認扱いに自動リセット
+  ipcMain.handle('api-get-login-verified', () => {
+    const verified = !!store.get('LOGIN_VERIFIED')
+    const verifiedEmail = (store.get('LOGIN_VERIFIED_EMAIL') as string) || ''
+    const currentEmail = (store.get('FREEE_EMAIL') as string) || ''
+    const valid = verified && verifiedEmail === currentEmail && !!currentEmail
+    return {
+      verified: valid,
+      verifiedAt: (store.get('LOGIN_VERIFIED_AT') as number) || 0,
+      hasCredentials: !!currentEmail && !!(store.get('FREEE_PASSWORD') as string),
+    }
+  })
+
+  // ─── ログイン確認状態リセット ────────────────────────────────
+  // メール/パスワード変更時にフロントから呼ぶ
+  ipcMain.handle('api-reset-login-verified', () => {
+    store.set('LOGIN_VERIFIED', false)
+    store.set('LOGIN_VERIFIED_AT', 0)
+    return { success: true }
+  })
+
+  // ─── 承認/差戻し API ──────────────────────────────────────────
+  // freee HR API の `/actions` エンドポイントを呼ぶ。
+  // approval_action: 'approve' | 'feedback' | 'cancel' | 'force_feedback'
+  type ApprovalActionType =
+    | 'overtime'
+    | 'paid_holiday'
+    | 'monthly_attendance'
+    | 'work_time'
+  const TYPE_PATH_MAP: Record<ApprovalActionType, string> = {
+    overtime: 'overtime_works',
+    paid_holiday: 'paid_holidays',
+    monthly_attendance: 'monthly_attendances',
+    work_time: 'work_times'
+  }
+
+  interface ApprovalActionPayload {
+    type: ApprovalActionType
+    id: number
+    targetRound: number
+    targetStepId: number
+    action: 'approve' | 'feedback' | 'cancel' | 'force_feedback'
+  }
+
+  async function executeApprovalAction(
+    payload: ApprovalActionPayload
+  ): Promise<{ success: boolean; status?: number; data?: unknown; message?: string }> {
+    const token = await tokenManager.getValidAccessToken()
+    const { companyId } = await getUserInfo(token)
+    const path = TYPE_PATH_MAP[payload.type]
+    if (!path) return { success: false, message: `不明な申請種別: ${payload.type}` }
+    const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${path}/${payload.id}/actions`
+    const body = {
+      company_id: companyId,
+      approval_action: payload.action,
+      target_round: payload.targetRound,
+      target_step_id: payload.targetStepId
+    }
+    console.log(`[API Call] POST ${url} action=${payload.action}`)
+    try {
+      const res = await axios.post(url, body, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'FREEE-VERSION': '2022-02-01'
+        }
+      })
+      return { success: true, status: res.status, data: res.data }
+    } catch (err: unknown) {
+      const axErr = err as { response?: { status?: number; data?: unknown }; message?: string }
+      const message = axErr.response?.data
+        ? typeof axErr.response.data === 'string'
+          ? axErr.response.data
+          : JSON.stringify(axErr.response.data)
+        : axErr.message || '不明なエラー'
+      console.error(
+        `[API Error] POST ${url} status=${axErr.response?.status} message=${message}`
+      )
+      return {
+        success: false,
+        status: axErr.response?.status,
+        message
+      }
+    }
+  }
+
+  // 単発（API 経路）。役職指定経路では失敗するため、UI からは基本 batch を使う想定。
+  ipcMain.handle('api-approval-action', async (_, payload: ApprovalActionPayload) => {
+    return await executeApprovalAction(payload)
+  })
+
+  /**
+   * 一括承認/差戻し。
+   * freee 仕様により役職指定/部門指定の申請経路は API では承認できないため、
+   * RPA (Web画面自動操作) でブラウザ経由で実行する。
+   * UI 側ではログイン確認済み (LOGIN_VERIFIED=true) を前提とする。
+   */
+  ipcMain.handle(
+    'api-approval-batch',
+    async (
+      event,
+      payloads: ApprovalActionPayload[],
+      options?: { comment?: string; action?: 'approve' | 'feedback' }
+    ) => {
+      if (!Array.isArray(payloads) || payloads.length === 0) {
+        return { total: 0, succeeded: 0, failed: 0, results: [] }
+      }
+      // 全件同じ action である前提（UI 側で承認/差戻しを別ボタンに分けている）
+      const action = options?.action || (payloads[0].action as 'approve' | 'feedback')
+      const email = (store.get('FREEE_EMAIL') as string) || ''
+      const password = (store.get('FREEE_PASSWORD') as string) || ''
+      if (!email || !password) {
+        return {
+          total: payloads.length,
+          succeeded: 0,
+          failed: payloads.length,
+          results: payloads.map((p) => ({
+            payload: { type: p.type, id: p.id, action },
+            success: false,
+            message:
+              '設定画面でメールアドレス・パスワードを入力し「ログイン確認」を完了してください。',
+          })),
+        }
+      }
+
+      const items = payloads.map((p) => ({
+        requestType: p.type,
+        requestId: p.id,
+      }))
+
+      const sendProgress = (
+        current: number,
+        total: number,
+        requestId: number,
+      ): void => {
+        event.sender.send('approval-batch-progress', {
+          current,
+          total,
+          type: payloads.find((p) => p.id === requestId)?.type || '',
+          id: requestId,
+        })
+      }
+
+      try {
+        // 承認 (approve): 一括 UI を使い、失敗 ID は per-item にフォールバック
+        // 差戻し (feedback): 既存 per-item 方式（一括 UI なし想定）
+        if (action === 'approve') {
+          console.log('[RPA] Approve via BULK UI')
+          const bulkResult = await approveBulkViaBrowser({
+            email,
+            password,
+            items,
+            action: 'approve',
+            headless: RPA_HEADLESS,
+            onProgress: (p) => sendProgress(p.current, p.total, p.requestId),
+          })
+          // 一括方式で失敗した ID は per-item にフォールバック
+          const failedItems = bulkResult.results
+            .filter((r) => !r.success)
+            .map((r) => ({ requestType: r.requestType as any, requestId: r.requestId }))
+          let fallbackResults: typeof bulkResult.results = []
+          if (failedItems.length > 0) {
+            console.log(`[RPA] Falling back to per-item for ${failedItems.length} items`)
+            const fallback = await approveBatchViaBrowser({
+              email,
+              password,
+              items: failedItems,
+              action: 'approve',
+              headless: RPA_HEADLESS,
+              onProgress: (p) => sendProgress(p.current, p.total, p.requestId),
+            })
+            fallbackResults = fallback.results
+          }
+          // bulkResult.results を fallback の成功で上書き
+          const finalById = new Map<number, (typeof bulkResult.results)[number]>()
+          for (const r of bulkResult.results) finalById.set(r.requestId, r)
+          for (const r of fallbackResults) {
+            if (r.success) finalById.set(r.requestId, r)
+          }
+          const finalResults = Array.from(finalById.values())
+          const succeeded = finalResults.filter((r) => r.success).length
+          return {
+            total: finalResults.length,
+            succeeded,
+            failed: finalResults.length - succeeded,
+            results: finalResults.map((r) => ({
+              payload: { type: r.requestType, id: r.requestId, action },
+              success: r.success,
+              message: r.message,
+            })),
+          }
+        }
+
+        // feedback (差戻し): per-item 方式
+        const rpaResult = await approveBatchViaBrowser({
+          email,
+          password,
+          items,
+          action,
+          headless: RPA_HEADLESS,
+          onProgress: (p) => sendProgress(p.current, p.total, p.requestId),
+        })
+        return {
+          total: rpaResult.total,
+          succeeded: rpaResult.succeeded,
+          failed: rpaResult.failed,
+          results: rpaResult.results.map((r) => ({
+            payload: { type: r.requestType, id: r.requestId, action },
+            success: r.success,
+            message: r.message,
+          })),
+        }
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : '実行に失敗しました'
+        console.error('[RPA] approveBatch fatal:', message)
+        return {
+          total: payloads.length,
+          succeeded: 0,
+          failed: payloads.length,
+          results: payloads.map((p) => ({
+            payload: { type: p.type, id: p.id, action },
+            success: false,
+            message,
+          })),
+        }
+      }
+    }
+  )
+
   ipcMain.handle('api-web-submit-overtime', async (_, payload) => {
     try {
       const email = await store.get('FREEE_EMAIL')
@@ -286,13 +578,57 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle('api-fetch-approvals', async () => {
+  ipcMain.handle('api-web-submit-overtime-batch', async (event, payload) => {
+    try {
+      const email = await store.get('FREEE_EMAIL')
+      const password = await store.get('FREEE_PASSWORD')
+      if (!email || !password) {
+        throw new Error('Web版申請にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
+      }
+      return await submitOvertimeBatchViaBrowser({
+        ...payload,
+        email,
+        password,
+        headless: RPA_HEADLESS,
+        onProgress: (p) => event.sender.send('overtime-batch-progress', p)
+      })
+    } catch (error: any) {
+      console.error('Overtime Batch Web Submit Error:', error)
+      throw error
+    }
+  })
+
+  ipcMain.handle('api-web-submit-paid-leave-batch', async (event, payload) => {
+    try {
+      const email = await store.get('FREEE_EMAIL')
+      const password = await store.get('FREEE_PASSWORD')
+      if (!email || !password) {
+        throw new Error('Web版申請にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
+      }
+      return await submitPaidLeaveBatchViaBrowser({
+        ...payload,
+        email,
+        password,
+        headless: RPA_HEADLESS,
+        onProgress: (p) => event.sender.send('paid-leave-batch-progress', p)
+      })
+    } catch (error: any) {
+      console.error('Paid Leave Batch Web Submit Error:', error)
+      throw error
+    }
+  })
+
+  ipcMain.handle('api-fetch-approvals', async (_, options?: { limit?: number; statuses?: string[] }) => {
     const token = await tokenManager.getValidAccessToken()
     const { companyId, applicantId: myApplicantId } = await getUserInfo(token)
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     const params = { company_id: companyId }
+    const perTypeLimit = options?.limit ?? 50
 
-    // 従業員名マップ（ページネーションで全件取得）
+    // 手動ID→名前マッピング（API取得失敗時のフォールバック / 上書き）
+    const manualMap: Record<string, string> = (store.get('ID_NAME_MAP') as Record<string, string>) || {}
+
+    // 従業員名マップ（ページネーションで全件取得 / 複数キーで登録）
     const employeeMap: Record<string, string> = {}
     try {
       let offset = 0
@@ -303,15 +639,30 @@ app.whenReady().then(() => {
         })
         const employees: any[] = empRes.data.employees || []
         for (const emp of employees) {
-          const name = [emp.last_name, emp.first_name].filter(Boolean).join(' ') || emp.display_name || String(emp.id)
-          employeeMap[String(emp.id)] = name
+          const name = [emp.last_name, emp.first_name].filter(Boolean).join(' ')
+            || emp.display_name
+            || String(emp.id)
+          // 実レスポンスに存在するキーだけマップ化する
+          if (emp.id !== undefined && emp.id !== null) employeeMap[String(emp.id)] = name
+          if (emp.user_id !== undefined && emp.user_id !== null) employeeMap[String(emp.user_id)] = name
+          if (emp.employee_id !== undefined && emp.employee_id !== null) employeeMap[String(emp.employee_id)] = name
         }
-        console.log(`[API] employees fetched: offset=${offset}, count=${employees.length}, total so far=${Object.keys(employeeMap).length}`)
+        console.log(`[API] employees fetched: offset=${offset}, count=${employees.length}, mapped keys=${Object.keys(employeeMap).length}`)
         if (employees.length < limit) break
         offset += limit
       }
     } catch (e: any) {
       console.warn('[API] employees fetch failed:', e.message)
+    }
+
+    const resolveName = (id: number | string | undefined | null): string => {
+      if (id === undefined || id === null || id === '') return '—'
+      const key = String(id)
+      // フォールバック順:
+      // 1) employeeMap（API成功時）
+      // 2) manualMap（手動登録）
+      // 3) ID:${key}（最終フォールバック）
+      return employeeMap[key] || manualMap[key] || `ID:${key}`
     }
 
     // 申請経路マップ
@@ -331,114 +682,243 @@ app.whenReady().then(() => {
       for (const d of depts) deptMap[String(d.id)] = d.name
     } catch (e: any) { console.warn('[API] depts fetch failed:', e.message) }
 
-    const results: any[] = []
-
-    // 残業申請（自分の申請も含む: status=in_progressのみ）
-    try {
-      const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/overtime_works', { headers, params })
-      const items: any[] = res.data.overtime_works || (Array.isArray(res.data) ? res.data : [])
-      for (const item of items) {
-        if (item.status !== 'in_progress') continue
-        const applicantId = item.applicant_id ?? item.employee_id
-        const applicantName = item.applicant_name
-          || employeeMap[String(applicantId)]
-          || `ID:${applicantId}`
-        results.push({
-          type: 'overtime',
-          id: item.id,
-          applicantId,
-          applicantName,
-          targetDate: item.target_date || '',
-          startAt: item.start_at || '',
-          endAt: item.end_at || '',
-          comment: item.comment || '',
-          routeName: routeMap[String(item.approval_flow_route_id)] || '',
-          departmentName: item.department_id ? (deptMap[String(item.department_id)] || '') : '',
-          isSelf: String(applicantId) === String(myApplicantId),
-        })
-      }
-    } catch (e: any) { console.warn('[API] overtime_works fetch failed:', e.message) }
-
-    // 有給申請
     const usageTypeLabel: Record<string, string> = {
       full_day: '全休', morning_half: '午前休', afternoon_half: '午後休',
       full: '全休', morning: '午前休', afternoon: '午後休',
+      hourly: '時間単位',
     }
-    try {
-      const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/paid_holidays', { headers, params })
-      const items: any[] = res.data.paid_holidays || (Array.isArray(res.data) ? res.data : [])
-      for (const item of items) {
-        if (item.status !== 'in_progress') continue
-        const applicantId = item.applicant_id ?? item.employee_id
-        const applicantName = item.applicant_name
-          || employeeMap[String(applicantId)]
-          || `ID:${applicantId}`
-        results.push({
-          type: 'paid_holiday',
-          id: item.id,
-          applicantId,
-          applicantName,
-          targetDate: item.target_date || '',
-          comment: item.comment || '',
-          usageType: usageTypeLabel[item.usage_type] || item.usage_type || '',
-          routeName: routeMap[String(item.approval_flow_route_id)] || '',
-          departmentName: item.department_id ? (deptMap[String(item.department_id)] || '') : '',
-          isSelf: String(applicantId) === String(myApplicantId),
-        })
-      }
-    } catch (e: any) { console.warn('[API] paid_holidays fetch failed:', e.message) }
+    const holidayTypeLabel: Record<string, string> = {
+      paid_holiday: '有給',
+      special_holiday: '特別休暇',
+      compensation_holiday: '代休',
+      substitute_holiday: '振休',
+    }
 
-    // 月次締め申請
-    try {
-      const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/monthly_attendances', { headers, params })
-      const rawItems = res.data
-      const items: any[] = rawItems.monthly_attendances || rawItems.approval_requests || (Array.isArray(rawItems) ? rawItems : [])
-      if (items.length > 0) {
-        console.log('[API] monthly_attendances first item keys:', Object.keys(items[0]))
-        console.log('[API] monthly_attendances first item:', JSON.stringify(items[0]).slice(0, 500))
-      }
-      for (const item of items) {
-        if (item.status !== 'in_progress') continue
-        // target_year/target_month または target_date を柔軟に処理
-        let targetDate = ''
-        if (item.target_year && item.target_month) {
+    type ApprovalLog = {
+      userId: number | null
+      userName: string
+      action: string
+      updatedAt: string
+    }
+
+    type ApprovalItem = {
+      type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+      requestType: string
+      id: number
+      requestId: number
+      applicationNumber: number | null
+      applicantId: number | null
+      applicantName: string
+      approverIds: number[]
+      approverNames: string[]
+      targetDate: string
+      startAt: string
+      endAt: string
+      issueDate: string
+      comment: string
+      status: string
+      revokeStatus: string | null
+      passedAutoCheck: boolean | null
+      approvalFlowRouteId: number | null
+      routeName: string
+      currentStepId: number | null
+      currentRound: number | null
+      approvalFlowLogs: ApprovalLog[]
+      usageType: string
+      holidayType: string
+      values: any
+      departmentName: string
+      isSelf: boolean
+      isApprover: boolean
+    }
+
+    type FetchTypeKey = 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+    const TYPE_PATH: Record<FetchTypeKey, string> = {
+      overtime: 'overtime_works',
+      paid_holiday: 'paid_holidays',
+      monthly_attendance: 'monthly_attendances',
+      work_time: 'work_times',
+    }
+    const RESPONSE_KEY: Record<FetchTypeKey, string> = {
+      overtime: 'overtime_works',
+      paid_holiday: 'paid_holidays',
+      monthly_attendance: 'monthly_attendances',
+      work_time: 'work_times',
+    }
+
+    const buildItem = (typeKey: FetchTypeKey, raw: any, detail: any | null): ApprovalItem => {
+      const item = detail || raw
+      const fallback = raw || {}
+      const merged = (key: string) => (item && item[key] !== undefined ? item[key] : fallback[key])
+
+      const applicantId: number | null = merged('applicant_id') ?? merged('employee_id') ?? null
+      const approverIds: number[] = Array.isArray(merged('approver_ids')) ? merged('approver_ids') : []
+      const approverNames = approverIds.map((id) => resolveName(id))
+      const logsRaw: any[] = Array.isArray(merged('approval_flow_logs')) ? merged('approval_flow_logs') : []
+      const approvalFlowLogs: ApprovalLog[] = logsRaw.map((log) => ({
+        userId: log.user_id ?? null,
+        userName: resolveName(log.user_id),
+        action: log.action || '',
+        updatedAt: log.updated_at || '',
+      }))
+
+      let targetDate = merged('target_date') || ''
+      if (typeKey === 'monthly_attendance') {
+        if (item?.target_year && item?.target_month) {
           targetDate = `${item.target_year}-${String(item.target_month).padStart(2, '0')}`
-        } else if (item.target_date) {
-          targetDate = String(item.target_date).slice(0, 7)
+        } else if (typeof targetDate === 'string') {
+          targetDate = targetDate.slice(0, 7)
         }
-        // applicant_id または employee_id のどちらかを使用
-        const applicantId = item.applicant_id ?? item.employee_id
-        const applicantName = item.applicant_name
-          || employeeMap[String(applicantId)]
-          || `ID:${applicantId}`
-        results.push({
-          type: 'monthly_attendance',
-          id: item.id,
-          applicantId,
-          applicantName,
-          targetDate,
-          comment: item.comment || '',
-          routeName: routeMap[String(item.approval_flow_route_id)] || '',
-          departmentName: item.department_id ? (deptMap[String(item.department_id)] || '') : '',
-          isSelf: String(applicantId) === String(myApplicantId),
-        })
       }
-    } catch (e: any) { console.warn('[API] monthly_attendances fetch failed:', e.message) }
 
-    return results.sort((a, b) => (a.targetDate || '').localeCompare(b.targetDate || ''))
+      const routeId = merged('approval_flow_route_id') ?? null
+      const routeName = merged('approval_flow_route_name')
+        || (routeId ? (routeMap[String(routeId)] || '') : '')
+
+      const usageRaw = merged('usage_type')
+      const holidayRaw = merged('holiday_type')
+
+      return {
+        type: typeKey,
+        requestType: TYPE_PATH[typeKey],
+        id: merged('id'),
+        requestId: merged('id'),
+        applicationNumber: merged('application_number') ?? null,
+        applicantId,
+        applicantName: merged('applicant_name') || resolveName(applicantId),
+        approverIds,
+        approverNames,
+        targetDate: targetDate || '',
+        startAt: merged('start_at') || '',
+        endAt: merged('end_at') || '',
+        issueDate: merged('issue_date') || '',
+        comment: merged('comment') || '',
+        status: merged('status') || '',
+        revokeStatus: merged('revoke_status') ?? null,
+        passedAutoCheck: typeof merged('passed_auto_check') === 'boolean' ? merged('passed_auto_check') : null,
+        approvalFlowRouteId: routeId,
+        routeName,
+        currentStepId: merged('current_step_id') ?? null,
+        currentRound: merged('current_round') ?? null,
+        approvalFlowLogs,
+        usageType: usageRaw ? (usageTypeLabel[usageRaw] || usageRaw) : '',
+        holidayType: holidayRaw ? (holidayTypeLabel[holidayRaw] || holidayRaw) : '',
+        values: merged('values') ?? null,
+        departmentName: merged('department_id') ? (deptMap[String(merged('department_id'))] || '') : '',
+        isSelf: applicantId !== null && String(applicantId) === String(myApplicantId),
+        isApprover: (() => {
+          const myId = String(myApplicantId)
+
+          // 1) approval_flow_logs に自分の approve アクションがあれば既承認 → false
+          const alreadyApproved = approvalFlowLogs.some(
+            (log) => log.userId !== null && String(log.userId) === myId && log.action === 'approve'
+          )
+          if (alreadyApproved) return false
+
+          // 2) 詳細レスポンスに approval_flow_steps がある場合、current_step_id のステップの承認者か確認
+          const steps: any[] = Array.isArray(detail?.approval_flow_steps) ? detail.approval_flow_steps : []
+          const currentStepId = merged('current_step_id')
+
+          if (steps.length > 0 && currentStepId != null) {
+            const currentStep = steps.find((s: any) => s.id === currentStepId)
+            if (currentStep) {
+              const stepApproverIds: number[] = Array.isArray(currentStep.approver_ids)
+                ? currentStep.approver_ids
+                : (currentStep.approver_id != null ? [currentStep.approver_id] : [])
+              return stepApproverIds.some((id: number) => String(id) === myId)
+            }
+          }
+
+          // 3) フォールバック: steps が取得できない場合（月次締め等）
+          // approverIds に自分が含まれていれば承認者と判定する
+          return approverIds.some((id) => String(id) === myId)
+        })(),
+      }
+    }
+
+    const fetchListAndDetails = async (typeKey: FetchTypeKey): Promise<ApprovalItem[]> => {
+      const path = TYPE_PATH[typeKey]
+      const respKey = RESPONSE_KEY[typeKey]
+      const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${path}`
+      let listItems: any[] = []
+      try {
+        const res = await axios.get(url, { headers, params: { ...params, limit: perTypeLimit } })
+        const data = res.data
+        listItems = data?.[respKey]
+          || data?.approval_requests
+          || (Array.isArray(data) ? data : [])
+        console.log(`[API] ${path} list fetched: ${listItems.length}`)
+      } catch (e: any) {
+        console.warn(`[API] ${path} list fetch failed:`, e.response?.status, e.message)
+        return []
+      }
+
+      // 詳細APIを並列取得（失敗しても一覧データだけで表示できるようにする）
+      const detailPromises = listItems.map(async (raw) => {
+        const id = raw?.id
+        if (!id) return { raw, detail: null }
+        try {
+          const detRes = await axios.get(`${url}/${id}`, { headers, params })
+          const detailData = detRes.data?.[respKey.replace(/s$/, '')] || detRes.data
+          // デバッグ: approval_flow_steps の有無を確認（初回のみ）
+          if (id === listItems[0]?.id) {
+            console.log(`[API] ${path}/${id} detail keys:`, Object.keys(detailData || {}))
+            console.log(`[API] ${path}/${id} approval_flow_steps:`, JSON.stringify(detailData?.approval_flow_steps || 'NOT_FOUND'))
+            console.log(`[API] ${path}/${id} current_step_id:`, detailData?.current_step_id)
+            console.log(`[API] ${path}/${id} approval_flow_logs:`, JSON.stringify(detailData?.approval_flow_logs || []))
+          }
+          return { raw, detail: detailData }
+        } catch (e: any) {
+          console.warn(`[API] ${path}/${id} detail fetch failed:`, e.response?.status, e.message)
+          return { raw, detail: null }
+        }
+      })
+      const settled = await Promise.all(detailPromises)
+      return settled.map(({ raw, detail }) => buildItem(typeKey, raw, detail))
+    }
+
+    const allTypes: FetchTypeKey[] = ['overtime', 'paid_holiday', 'monthly_attendance', 'work_time']
+    const fetched = await Promise.all(allTypes.map((t) => fetchListAndDetails(t)))
+    const results: ApprovalItem[] = ([] as ApprovalItem[]).concat(...fetched)
+
+    // ステータスフィルタ（指定がある場合）
+    const filtered = options?.statuses?.length
+      ? results.filter((r) => options.statuses!.includes(r.status))
+      : results
+
+    // 申請日が新しい順、なければ対象日順
+    return filtered.sort((a, b) => {
+      const ai = a.issueDate || a.targetDate || ''
+      const bi = b.issueDate || b.targetDate || ''
+      return bi.localeCompare(ai)
+    })
   })
 
   // ─── 自分の申請一覧取得 ────────────────────────────────────────
-  ipcMain.handle('api-fetch-my-requests', async () => {
+  ipcMain.handle('api-fetch-my-requests', async (_, options?: { months?: number }) => {
     const token = await tokenManager.getValidAccessToken()
     const { companyId, applicantId: myApplicantId } = await getUserInfo(token)
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     // サーバー側で applicant_id フィルタ + limit=100 で自分の申請のみ取得
     const params = { company_id: companyId, applicant_id: myApplicantId, limit: 100 }
-    console.log(`[MY-REQ] Fetching requests for companyId=${companyId}, applicantId(userId)=${myApplicantId}`)
-    // 除外ステータス（承認済み・却下・取り下げ済みは非表示）
-    // draft（下書き）は含める：フロント側でフィルタリングする
-    const excludeStatuses = ['approved', 'denied', 'feedback_waiting', 'withdrawn', 'feedback']
+    const months = Math.max(1, Math.min(6, options?.months ?? 1))
+    console.log(
+      `[MY-REQ] Fetching companyId=${companyId} applicantId=${myApplicantId} months=±${months}`,
+    )
+    // 除外ステータス（取下げ・却下系）。承認済み(approved)は表示する。
+    const excludeStatuses = ['denied', 'feedback_waiting', 'withdrawn']
+
+    // 期間: 今日から ±N ヶ月（target_date でフィルタ）
+    const today = new Date()
+    const fromDate = new Date(today)
+    fromDate.setMonth(fromDate.getMonth() - months)
+    const toDate = new Date(today)
+    toDate.setMonth(toDate.getMonth() + months)
+    const formatYmd = (d: Date): string =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const fromStr = formatYmd(fromDate)
+    const toStr = formatYmd(toDate)
+    console.log(`[MY-REQ] Date filter: ${fromStr} ～ ${toStr}`)
 
     const routeMap: Record<string, string> = {}
     try {
@@ -447,72 +927,145 @@ app.whenReady().then(() => {
       })
       const routes: any[] = routeRes.data.approval_flow_routes || []
       for (const r of routes) routeMap[String(r.id)] = r.name
+      console.log(`[MY-REQ] routes fetched: ${routes.length}`)
     } catch (e: any) { console.warn('[API] routes fetch failed:', e.message) }
 
-    const results: any[] = []
-
-    // 残業申請
-    try {
-      const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/overtime_works', { headers, params })
-      const items: any[] = res.data.overtime_works || (Array.isArray(res.data) ? res.data : [])
-      console.log(`[MY-REQ] overtime total=${items.length}`)
-      for (const item of items) {
-        console.log(`[MY-REQ] overtime id=${item.id} status="${item.status}"`)
-        if (excludeStatuses.includes(item.status)) continue
-        results.push({
-          type: 'overtime', id: item.id, status: item.status,
-          targetDate: item.target_date || '',
-          startAt: item.start_at || '', endAt: item.end_at || '',
-          comment: item.comment || '',
-          routeName: routeMap[String(item.approval_flow_route_id)] || '',
-        })
-      }
-    } catch (e: any) { console.warn('[API] my overtime fetch failed:', e.message) }
-
-    // 有給申請
     const usageTypeLabel: Record<string, string> = {
       full_day: '全休', morning_half: '午前半休', afternoon_half: '午後半休',
       full: '全休', morning: '午前半休', afternoon: '午後半休',
     }
-    try {
-      const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/paid_holidays', { headers, params })
-      const items: any[] = res.data.paid_holidays || (Array.isArray(res.data) ? res.data : [])
-      console.log(`[MY-REQ] paid_holidays total=${items.length}`)
-      for (const item of items) {
-        console.log(`[MY-REQ] paid_holiday id=${item.id} status="${item.status}"`)
-        if (excludeStatuses.includes(item.status)) continue
-        results.push({
-          type: 'paid_holiday', id: item.id, status: item.status,
-          targetDate: item.target_date || '',
-          usageType: usageTypeLabel[item.usage_type] || item.usage_type || '',
-          comment: item.comment || '',
-          routeName: routeMap[String(item.approval_flow_route_id)] || '',
-        })
+
+    /**
+     * 一覧 + 詳細 API を併用して route_name を確実に取得する。
+     * api-fetch-approvals と同じパターン: 詳細を Promise.all で並列フェッチ。
+     */
+    /** 申請の対象日が ±months 範囲内か判定 */
+    const isWithinDateRange = (item: any): boolean => {
+      // monthly_attendance: target_year/target_month を YYYY-MM-01 とみなす
+      if (item.target_year && item.target_month) {
+        const ymd = `${item.target_year}-${String(item.target_month).padStart(2, '0')}-01`
+        return ymd >= fromStr && ymd <= toStr
       }
-    } catch (e: any) { console.warn('[API] my paid_holidays fetch failed:', e.message) }
+      const td = item.target_date
+      if (!td) return true // 対象日がない場合は範囲外で除外しない
+      return td >= fromStr && td <= toStr
+    }
+
+    const fetchListAndDetails = async (
+      pathSegment: string,
+      listKey: string,
+    ): Promise<Array<{ raw: any; detail: any | null }>> => {
+      const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${pathSegment}`
+      let listItems: any[] = []
+      try {
+        const res = await axios.get(url, { headers, params })
+        const data = res.data
+        listItems = data?.[listKey] || data?.approval_requests || (Array.isArray(data) ? data : [])
+        console.log(`[MY-REQ] ${pathSegment} list: ${listItems.length}`)
+      } catch (e: any) {
+        console.warn(`[MY-REQ] ${pathSegment} list fetch failed:`, e.response?.status, e.message)
+        return []
+      }
+      // ステータス除外 + 日付範囲フィルタ
+      const filtered = listItems
+        .filter((it) => !excludeStatuses.includes(it.status))
+        .filter((it) => isWithinDateRange(it))
+      console.log(`[MY-REQ] ${pathSegment} after filter: ${filtered.length}`)
+      // 詳細APIを並列取得（失敗しても一覧データだけで継続）
+      const detailKey = listKey.replace(/s$/, '')
+      const detailPromises = filtered.map(async (raw) => {
+        if (!raw?.id) return { raw, detail: null }
+        try {
+          const detRes = await axios.get(`${url}/${raw.id}`, {
+            headers,
+            params: { company_id: companyId },
+          })
+          return { raw, detail: detRes.data?.[detailKey] || detRes.data }
+        } catch (e: any) {
+          console.warn(
+            `[MY-REQ] ${pathSegment}/${raw.id} detail failed:`,
+            e.response?.status,
+            e.message,
+          )
+          return { raw, detail: null }
+        }
+      })
+      return Promise.all(detailPromises)
+    }
+
+    /** 詳細 → 一覧 の順で値を取得（詳細優先） */
+    const merged = (raw: any, detail: any | null, key: string): any =>
+      detail && detail[key] !== undefined ? detail[key] : raw?.[key]
+
+    /** 申請経路名を: 詳細 approval_flow_route_name → routeMap[id] → '' で解決 */
+    const resolveRouteName = (raw: any, detail: any | null): string => {
+      const fromDetail = detail?.approval_flow_route_name
+      if (fromDetail) return String(fromDetail)
+      const routeId = merged(raw, detail, 'approval_flow_route_id')
+      if (routeId) return routeMap[String(routeId)] || ''
+      return ''
+    }
+
+    // 3種別を並列でフェッチ
+    const [overtimeData, paidHolidayData, monthlyData] = await Promise.all([
+      fetchListAndDetails('overtime_works', 'overtime_works'),
+      fetchListAndDetails('paid_holidays', 'paid_holidays'),
+      fetchListAndDetails('monthly_attendances', 'monthly_attendances'),
+    ])
+
+    const results: any[] = []
+
+    // 残業申請
+    for (const { raw, detail } of overtimeData) {
+      results.push({
+        type: 'overtime',
+        id: raw.id,
+        status: merged(raw, detail, 'status') || raw.status,
+        applicationNumber: merged(raw, detail, 'application_number') ?? null,
+        targetDate: merged(raw, detail, 'target_date') || '',
+        startAt: merged(raw, detail, 'start_at') || '',
+        endAt: merged(raw, detail, 'end_at') || '',
+        comment: merged(raw, detail, 'comment') || '',
+        routeName: resolveRouteName(raw, detail),
+      })
+    }
+
+    // 有給申請
+    for (const { raw, detail } of paidHolidayData) {
+      const usageRaw = merged(raw, detail, 'usage_type')
+      results.push({
+        type: 'paid_holiday',
+        id: raw.id,
+        status: merged(raw, detail, 'status') || raw.status,
+        applicationNumber: merged(raw, detail, 'application_number') ?? null,
+        targetDate: merged(raw, detail, 'target_date') || '',
+        usageType: usageRaw ? (usageTypeLabel[usageRaw] || usageRaw) : '',
+        comment: merged(raw, detail, 'comment') || '',
+        routeName: resolveRouteName(raw, detail),
+      })
+    }
 
     // 月次締め申請
-    try {
-      const res = await axios.get('https://api.freee.co.jp/hr/api/v1/approval_requests/monthly_attendances', { headers, params })
-      const rawItems = res.data
-      const items: any[] = rawItems.monthly_attendances || rawItems.approval_requests || (Array.isArray(rawItems) ? rawItems : [])
-      console.log(`[MY-REQ] monthly_attendances total=${items.length}`)
-      for (const item of items) {
-        console.log(`[MY-REQ] monthly_attendance id=${item.id} status="${item.status}"`)
-        if (excludeStatuses.includes(item.status)) continue
-        let targetDate = ''
-        if (item.target_year && item.target_month) {
-          targetDate = `${item.target_year}-${String(item.target_month).padStart(2, '0')}`
-        } else if (item.target_date) {
-          targetDate = String(item.target_date).slice(0, 7)
-        }
-        results.push({
-          type: 'monthly_attendance', id: item.id, status: item.status,
-          targetDate, comment: item.comment || '',
-          routeName: routeMap[String(item.approval_flow_route_id)] || '',
-        })
+    for (const { raw, detail } of monthlyData) {
+      let targetDate = ''
+      const year = merged(raw, detail, 'target_year')
+      const month = merged(raw, detail, 'target_month')
+      const td = merged(raw, detail, 'target_date')
+      if (year && month) {
+        targetDate = `${year}-${String(month).padStart(2, '0')}`
+      } else if (td) {
+        targetDate = String(td).slice(0, 7)
       }
-    } catch (e: any) { console.warn('[API] my monthly_attendances fetch failed:', e.message) }
+      results.push({
+        type: 'monthly_attendance',
+        id: raw.id,
+        status: merged(raw, detail, 'status') || raw.status,
+        applicationNumber: merged(raw, detail, 'application_number') ?? null,
+        targetDate,
+        comment: merged(raw, detail, 'comment') || '',
+        routeName: resolveRouteName(raw, detail),
+      })
+    }
 
     return results.sort((a, b) => (b.targetDate || '').localeCompare(a.targetDate || ''))
   })
@@ -547,6 +1100,27 @@ app.whenReady().then(() => {
     }
   })
 
+  // ─── 申請バッチ取り下げ・削除（Web） ─────────────────────────────
+  ipcMain.handle('api-cancel-request-web-batch', async (event, payload) => {
+    try {
+      const email = await store.get('FREEE_EMAIL')
+      const password = await store.get('FREEE_PASSWORD')
+      if (!email || !password) {
+        throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
+      }
+      return await cancelRequestBatchViaBrowser({
+        ...payload,
+        email,
+        password,
+        headless: RPA_HEADLESS,
+        onProgress: (p) => event.sender.send('cancel-batch-progress', p)
+      })
+    } catch (error: any) {
+      console.error('Cancel batch error:', error)
+      throw error
+    }
+  })
+
   // ─── 申請削除（REST API直接 - draft専用・高速） ─────────────────
   ipcMain.handle('api-delete-request-api', async (_, payload) => {
     const { requestType, requestId, companyId } = payload
@@ -576,12 +1150,9 @@ app.whenReady().then(() => {
     const token = await tokenManager.getValidAccessToken()
     const url = 'https://api.freee.co.jp/hr/api/v1/approval_requests/paid_holidays'
     console.log(`[API Call] POST ${url}`)
-    // freee HR API の usage_type 値（APIリファレンス準拠）
-    const usageTypeMap: Record<string, string> = {
-      'full_day': 'full_day',
-      'am_half': 'morning_half',
-      'pm_half': 'afternoon_half'
-    }
+    // freee HR API: values[].type で取得単位を指定（公式スキーマ準拠）
+    const { LEAVE_UNIT_TO_API } = await import('../shared/leaveUnit')
+    const apiType = LEAVE_UNIT_TO_API[payload.leaveUnit as keyof typeof LEAVE_UNIT_TO_API] || 'full'
     const { applicantId: resolvedApplicantId } = await getUserInfo(token)
     const applicantId = payload.applicantId ?? resolvedApplicantId
     const apiPayload: any = {
@@ -590,9 +1161,12 @@ app.whenReady().then(() => {
       target_date: payload.targetDate,
       approval_flow_route_id: payload.routeId,
       comment: payload.comment,
-      usage_type: usageTypeMap[payload.leaveUnit] || 'full'
+      values: [{ type: apiType }]
     }
     if (payload.departmentId) apiPayload.department_id = payload.departmentId
+    console.log(`[API Debug paid_leave] payload.leaveUnit = "${payload.leaveUnit}"`)
+    console.log(`[API Debug paid_leave] apiType = "${apiType}"`)
+    console.log(`[API Debug paid_leave] Full apiPayload =`, JSON.stringify(apiPayload, null, 2))
     try {
       const res = await axios.post(url, apiPayload, {
         headers: {
@@ -610,6 +1184,8 @@ app.whenReady().then(() => {
 
   ipcMain.handle('api-web-submit-paid-leave', async (_, payload) => {
     try {
+      console.log(`[RPA Debug] payload.leaveUnit = "${payload.leaveUnit}"`)
+      console.log(`[RPA Debug] Full payload keys:`, Object.keys(payload))
       const email = await store.get('FREEE_EMAIL')
       const password = await store.get('FREEE_PASSWORD')
       if (!email || !password) {
@@ -772,15 +1348,21 @@ app.whenReady().then(() => {
     autoUpdater.quitAndInstall()
   })
 
-  // アプリ起動時にバックグラウンドで事前ログイン（初回申請の待ち時間を短縮）
-  const startupEmail = store.get('FREEE_EMAIL') as string
-  const startupPassword = store.get('FREEE_PASSWORD') as string
-  if (startupEmail && startupPassword) {
+  // 起動時の事前ログインは「過去にログイン確認済み」の場合のみ実行する。
+  // 未確認の状態では無条件リトライによるアカウントロックを防ぐため自動ログインしない。
+  const startupEmail = (store.get('FREEE_EMAIL') as string) || ''
+  const startupPassword = (store.get('FREEE_PASSWORD') as string) || ''
+  const verifiedEmail = (store.get('LOGIN_VERIFIED_EMAIL') as string) || ''
+  const isVerified = !!store.get('LOGIN_VERIFIED') && verifiedEmail === startupEmail
+  if (startupEmail && startupPassword && isVerified) {
     setTimeout(() => {
-      preLoginViaBrowser(startupEmail, startupPassword).catch(e =>
-        console.warn('[Startup] Pre-login failed:', e.message)
-      )
+      preLoginViaBrowser(startupEmail, startupPassword).catch((e) => {
+        console.warn('[Startup] Auto pre-login failed; clearing verified flag:', e.message)
+        store.set('LOGIN_VERIFIED', false)
+      })
     }, 5000)
+  } else if (startupEmail && startupPassword && !isVerified) {
+    console.log('[Startup] Skipping auto pre-login (login not verified). Use Settings → ログイン確認.')
   }
 
   app.on('activate', function () {

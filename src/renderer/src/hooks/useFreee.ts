@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import type { LeaveUnit } from '../../../shared/leaveUnit'
 
 export const API_RESTRICTION_ERROR = '役職、部門を利用する申請はWebから'
 const FRIEENDLY_ERROR_MAP = {
@@ -182,7 +183,7 @@ export function useFreee() {
         }
     }, [])
 
-    // ─── Batch submit: sequential execution with progress ───
+    // ─── Batch submit: single browser instance for Web, sequential API for non-Web ───
     const submitBatch = useCallback(async (
         companyId: number,
         applicantId: number,
@@ -200,79 +201,94 @@ export function useFreee() {
         setError(null)
         setBatchProgress({ current: 0, total: dates.length })
 
-        const result: BatchResult = { total: dates.length, succeeded: 0, failed: [] }
-
-        for (let i = 0; i < dates.length; i++) {
-            setBatchProgress({ current: i + 1, total: dates.length })
-            try {
-                const payload: any = {
-                    company_id: companyId,
-                    applicant_id: applicantId,
-                    target_date: dates[i],
-                    start_at: startAt,
-                    end_at: endAt,
-                    comment: comment,
-                    approval_flow_route_id: routeId
-                }
-                if (departmentId) {
-                    payload.department_id = departmentId
-                }
-
-                if (useWeb) {
-                  await window.api.submitOvertimeWeb({
-                    companyId,
-                    applicantId,
-                    targetDate: dates[i],
-                    startAt,
-                    endAt,
-                    comment,
-                    routeId,
-                    departmentId,
-                    routeName: routeName ?? '',
-                    departmentName
-                  })
-                } else {
-                  try {
-                    await window.api.submitOvertime(payload)
-                  } catch (apiErr: any) {
-                    if (apiErr.message.includes('役職、部門を利用する申請はWebから')) {
-                      await window.api.submitOvertimeWeb({
+        try {
+            if (useWeb) {
+                // Web バッチ: ブラウザ1回起動でまとめて処理
+                const unsubscribe = window.api.onOvertimeBatchProgress((p) => {
+                    setBatchProgress({ current: p.current, total: p.total })
+                })
+                try {
+                    const result = await window.api.submitOvertimeWebBatch({
                         companyId,
-                        applicantId,
-                        targetDate: dates[i],
-                        startAt,
-                        endAt,
+                        items: dates.map(d => ({ targetDate: d, startAt, endAt })),
                         comment,
                         routeId,
-                        departmentId,
                         routeName: routeName ?? '',
+                        departmentId,
                         departmentName
-                      })
-                    } else {
-                      throw apiErr
-                    }
-                  }
+                    })
+                    if (result.failed.length > 0) setError(formatFreeeError(result.failed[0].error))
+                    return result
+                } finally {
+                    unsubscribe()
                 }
-                result.succeeded++
-            } catch (err: any) {
-                const formattedMsg = formatFreeeError(err.message)
-                result.failed.push({ date: dates[i], error: formattedMsg })
             }
-        }
 
-        if (result.failed.length > 0) {
-            setError(result.failed[0].error)
-        }
+            // API 経由: 従来のループ処理（最初の日付でAPI制限エラーの場合はWebバッチにフォールバック）
+            const result: BatchResult = { total: dates.length, succeeded: 0, failed: [] }
 
-        setLoading(false)
-        setBatchProgress(null)
-        return result
+            for (let i = 0; i < dates.length; i++) {
+                setBatchProgress({ current: i + 1, total: dates.length })
+                try {
+                    const payload: any = {
+                        company_id: companyId,
+                        applicant_id: applicantId,
+                        target_date: dates[i],
+                        start_at: startAt,
+                        end_at: endAt,
+                        comment: comment,
+                        approval_flow_route_id: routeId
+                    }
+                    if (departmentId) payload.department_id = departmentId
+
+                    try {
+                        await window.api.submitOvertime(payload)
+                    } catch (apiErr: any) {
+                        if (apiErr.message.includes('役職、部門を利用する申請はWebから')) {
+                            // API制限 → 残り全てをWebバッチにフォールバック
+                            const remainingDates = dates.slice(i)
+                            const unsubscribe = window.api.onOvertimeBatchProgress((p) => {
+                                setBatchProgress({ current: i + p.current, total: dates.length })
+                            })
+                            try {
+                                const webResult = await window.api.submitOvertimeWebBatch({
+                                    companyId,
+                                    items: remainingDates.map(d => ({ targetDate: d, startAt, endAt })),
+                                    comment,
+                                    routeId,
+                                    routeName: routeName ?? '',
+                                    departmentId,
+                                    departmentName
+                                })
+                                result.succeeded += webResult.succeeded
+                                result.failed.push(...webResult.failed)
+                            } finally {
+                                unsubscribe()
+                            }
+                            break // ループ終了（Webバッチが残り全てを処理済み）
+                        } else {
+                            throw apiErr
+                        }
+                    }
+                    result.succeeded++
+                } catch (err: any) {
+                    const formattedMsg = formatFreeeError(err.message)
+                    result.failed.push({ date: dates[i], error: formattedMsg })
+                }
+            }
+
+            if (result.failed.length > 0) setError(result.failed[0].error)
+            return result
+        } finally {
+            setLoading(false)
+            setBatchProgress(null)
+        }
     }, [])
 
     const submitPaidLeaveWeb = useCallback(async (
         companyId: number,
         targetDate: string,
-        leaveUnit: 'full_day' | 'am_half' | 'pm_half',
+        leaveUnit: LeaveUnit,
         startAt: string | undefined,
         endAt: string | undefined,
         routeId: number,
@@ -297,9 +313,9 @@ export function useFreee() {
     const submitPaidLeaveBatch = useCallback(async (
         companyId: number,
         dates: string[],
-        leaveUnit: 'full_day' | 'am_half' | 'pm_half',
-        startAt: string | undefined,
-        endAt: string | undefined,
+        leaveUnit: LeaveUnit,
+        _startAt: string | undefined,
+        _endAt: string | undefined,
         routeId: number,
         comment: string,
         departmentId?: number,
@@ -310,25 +326,30 @@ export function useFreee() {
         setError(null)
         setBatchProgress({ current: 0, total: dates.length })
 
-        const result: BatchResult = { total: dates.length, succeeded: 0, failed: [] }
-        for (let i = 0; i < dates.length; i++) {
-            setBatchProgress({ current: i + 1, total: dates.length })
-            try {
-                const batchPayload = {
-                    companyId, targetDate: dates[i], leaveUnit, startAt, endAt,
-                    comment, routeId, departmentId, routeName: routeName ?? '', departmentName
-                }
-                await (window.api as any).submitPaidLeaveWeb(batchPayload)
-                result.succeeded++
-            } catch (err: any) {
-                result.failed.push({ date: dates[i], error: err.message })
-            }
+        const unsubscribe = window.api.onPaidLeaveBatchProgress((p) => {
+            setBatchProgress({ current: p.current, total: p.total })
+        })
+        try {
+            const result = await window.api.submitPaidLeaveWebBatch({
+                companyId,
+                items: dates.map(d => ({ targetDate: d })),
+                leaveUnit,
+                comment,
+                routeId,
+                routeName: routeName ?? '',
+                departmentId,
+                departmentName
+            })
+            if (result.failed.length > 0) setError(result.failed[0].error)
+            return result
+        } finally {
+            unsubscribe()
+            setLoading(false)
+            setBatchProgress(null)
         }
-        if (result.failed.length > 0) setError(result.failed[0].error)
-        setLoading(false)
-        setBatchProgress(null)
-        return result
     }, [])
 
-    return { fetchRoutes, fetchDepartments, submitOvertime, submitOvertimeWeb, submitBatch, submitPaidLeaveWeb, submitPaidLeaveBatch, loading, error, batchProgress }
+    const clearError = useCallback(() => setError(null), [])
+
+    return { fetchRoutes, fetchDepartments, submitOvertime, submitOvertimeWeb, submitBatch, submitPaidLeaveWeb, submitPaidLeaveBatch, loading, error, clearError, batchProgress }
 }
