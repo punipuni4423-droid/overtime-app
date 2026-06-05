@@ -1,5 +1,8 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
+import { spawn } from 'child_process'
+import * as fs from 'fs'
+import * as os from 'os'
+import { dirname, join } from 'path'
 import axios from 'axios'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
@@ -26,7 +29,8 @@ const store = new Store({
     ID_NAME_MAP: {} as Record<string, string>,
     LOGIN_VERIFIED: false,
     LOGIN_VERIFIED_AT: 0,
-    LOGIN_VERIFIED_EMAIL: ''
+    LOGIN_VERIFIED_EMAIL: '',
+    AUTO_APPROVAL_ALLOWED_ROUTE_IDS: {} as Record<string, number[]>
   }
 })
 
@@ -57,6 +61,281 @@ async function getUserInfo(token: string): Promise<{ companyId: number; applican
   _cachedUserInfo = { companyId, applicantId: userId, employeeId }
   console.log(`[UserInfo] companyId=${companyId}, applicantId(userId)=${userId}, employeeId=${employeeId}`)
   return _cachedUserInfo
+}
+
+type AutoApprovalTypeKey = 'overtime' | 'paid_holiday' | 'work_time'
+type AutoApprovalHour = number | string
+
+const AUTO_APPROVAL_SCRIPT = app.isPackaged
+  ? join(process.resourcesPath, 'auto-approval', 'auto-approve-work-time.mjs')
+  : join(__dirname, '../../scripts/auto-approve-work-time.mjs')
+const AUTO_APPROVAL_WORKDIR = app.isPackaged ? dirname(AUTO_APPROVAL_SCRIPT) : join(__dirname, '../..')
+const AUTO_APPROVAL_NOTIFICATION_PATH = join(
+  process.env.APPDATA || join(os.homedir(), 'AppData', 'Roaming'),
+  'overtime-app',
+  'auto-approval-notifications.json',
+)
+
+const AUTO_APPROVAL_TYPES: Record<
+  AutoApprovalTypeKey,
+  { taskName: string; label: string; description: string; defaultRouteIds: number[] }
+> = {
+  overtime: {
+    taskName: 'freee-overtime-auto-approve',
+    label: '残業申請',
+    description: 'freee残業申請を、正しい申請経路の場合のみ自動承認する',
+    defaultRouteIds: [881216],
+  },
+  paid_holiday: {
+    taskName: 'freee-paid-holiday-auto-approve',
+    label: '有給申請',
+    description: 'freee有給申請を、正しい申請経路の場合のみ自動承認する',
+    defaultRouteIds: [881725],
+  },
+  work_time: {
+    taskName: 'freee-work-time-auto-approve',
+    label: '勤務時間修正',
+    description: 'freee勤務時間修正申請を、正しい申請経路の場合のみ自動承認する',
+    defaultRouteIds: [1406896],
+  },
+}
+
+function getAutoApprovalType(type?: string): { key: AutoApprovalTypeKey; taskName: string; label: string; description: string; defaultRouteIds: number[] } {
+  const key = (type || 'work_time') as AutoApprovalTypeKey
+  const config = AUTO_APPROVAL_TYPES[key]
+  if (!config) throw new Error(`自動承認の対象種別が不正です: ${key}`)
+  return { key, ...config }
+}
+
+function psSingleQuote(value: unknown): string {
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
+function normalizeAutoApprovalHours(hours: unknown): AutoApprovalHour[] {
+  const source = Array.isArray(hours) ? hours : [12, 24]
+  const normalized = Array.from(
+    new Set(
+      source
+        .map((h) => {
+          if (typeof h === 'string' && /^\d{1,2}:\d{2}$/.test(h)) {
+            const [hh, mm] = h.split(':').map(Number)
+            if (Number.isInteger(hh) && Number.isInteger(mm) && hh >= 9 && hh <= 23 && mm >= 0 && mm <= 59) {
+              return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+            }
+          }
+          const hour = Number(h)
+          return Number.isInteger(hour) && hour >= 9 && hour <= 24 ? hour : null
+        })
+        .filter((h): h is AutoApprovalHour => h !== null),
+    ),
+  ).sort((a, b) => {
+    const toMinutes = (value: AutoApprovalHour): number => {
+      if (typeof value === 'string') {
+        const [hh, mm] = value.split(':').map(Number)
+        return hh * 60 + mm
+      }
+      return value * 60
+    }
+    return toMinutes(a) - toMinutes(b)
+  })
+  return normalized.length > 0 ? normalized : [12, 24]
+}
+
+function psAutoApprovalTimeArray(values: unknown): string {
+  return normalizeAutoApprovalHours(values).map((value) => psSingleQuote(value)).join(',')
+}
+
+function normalizeAutoApprovalRouteIds(routeIds: unknown): number[] {
+  const source = Array.isArray(routeIds) ? routeIds : []
+  return Array.from(
+    new Set(source.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)),
+  ).sort((a, b) => a - b)
+}
+
+function getAutoApprovalAllowedRouteIds(type: string): number[] {
+  const target = getAutoApprovalType(type)
+  const allSettings = (store.get('AUTO_APPROVAL_ALLOWED_ROUTE_IDS') as Record<string, number[]>) || {}
+  const configured = normalizeAutoApprovalRouteIds(allSettings[target.key])
+  return configured.length > 0 ? configured : target.defaultRouteIds
+}
+
+function setAutoApprovalAllowedRouteIds(type: string, routeIds: unknown): number[] {
+  const target = getAutoApprovalType(type)
+  const normalized = normalizeAutoApprovalRouteIds(routeIds)
+  if (normalized.length === 0) throw new Error('承認経路を1つ以上選択してください。')
+  const allSettings = (store.get('AUTO_APPROVAL_ALLOWED_ROUTE_IDS') as Record<string, number[]>) || {}
+  store.set('AUTO_APPROVAL_ALLOWED_ROUTE_IDS', { ...allSettings, [target.key]: normalized })
+  return normalized
+}
+
+function runPowerShellJson(script: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || stdout || `PowerShell exited with code ${code}`))
+        return
+      }
+      const text = stdout.trim()
+      if (!text) {
+        resolve(null)
+        return
+      }
+      try {
+        resolve(JSON.parse(text))
+      } catch (error: any) {
+        reject(new Error(`PowerShell JSON parse failed: ${error.message}\n${text}`))
+      }
+    })
+  })
+}
+
+async function getAutoApprovalStatus(type?: string): Promise<any> {
+  const target = getAutoApprovalType(type)
+  const script = `
+$ErrorActionPreference = 'Stop'
+$TaskName = ${psSingleQuote(target.taskName)}
+$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if (-not $task) {
+  [pscustomobject]@{
+    exists = $false
+    enabled = $false
+    state = 'Missing'
+    hours = @(12, 24)
+    nextRunTime = ''
+    lastRunTime = ''
+    lastTaskResult = $null
+  } | ConvertTo-Json -Compress
+  exit 0
+}
+$info = Get-ScheduledTaskInfo -TaskName $TaskName
+$hours = @($task.Triggers | ForEach-Object {
+  if ($_.StartBoundary) {
+    $dt = [DateTime]::Parse($_.StartBoundary)
+    if ($dt.Minute -eq 0) {
+      if ($dt.Hour -eq 0) { '24' } else { [string]$dt.Hour }
+    } else {
+      '{0:D2}:{1:D2}' -f $dt.Hour, $dt.Minute
+    }
+  }
+} | Sort-Object -Unique)
+if ($hours.Count -eq 0) { $hours = @(12, 24) }
+[pscustomobject]@{
+  exists = $true
+  enabled = ($task.State -ne 'Disabled')
+  state = $task.State.ToString()
+  hours = $hours
+  nextRunTime = if ($info.NextRunTime) { $info.NextRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+  lastRunTime = if ($info.LastRunTime -and $info.LastRunTime.Year -gt 2000) { $info.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+  lastTaskResult = $info.LastTaskResult
+} | ConvertTo-Json -Compress
+`
+  const status = await runPowerShellJson(script)
+  return {
+    ...status,
+    type: target.key,
+    label: target.label,
+    hours: normalizeAutoApprovalHours(status?.hours),
+    allowedRouteIds: getAutoApprovalAllowedRouteIds(target.key),
+  }
+}
+
+async function configureAutoApproval(type: string | undefined, { enabled, hours }: { enabled: boolean; hours: unknown }): Promise<any> {
+  const target = getAutoApprovalType(type)
+  const normalizedHours = normalizeAutoApprovalHours(hours)
+  const timeList = psAutoApprovalTimeArray(normalizedHours)
+  const isEnabled = enabled !== false
+  const script = `
+$ErrorActionPreference = 'Stop'
+$TaskName = ${psSingleQuote(target.taskName)}
+$ScriptPath = ${psSingleQuote(AUTO_APPROVAL_SCRIPT)}
+$WorkDir = ${psSingleQuote(AUTO_APPROVAL_WORKDIR)}
+$RequestType = ${psSingleQuote(target.key)}
+$Times = @(${timeList})
+$NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $NodeCommand) { throw "node.exe が見つかりません。Node.jsをインストールしてください。" }
+$Node = $NodeCommand.Source
+if (-not (Test-Path $ScriptPath)) { throw "auto approval script not found: $ScriptPath" }
+$action = New-ScheduledTaskAction -Execute $Node -Argument ('"' + $ScriptPath + '" --execute --type ' + $RequestType) -WorkingDirectory $WorkDir
+$triggers = @()
+foreach ($time in $Times) {
+  $text = [string]$time
+  if ($text.Contains(':')) {
+    $parts = $text.Split(':')
+    $actualHour = [int]$parts[0]
+    $minute = [int]$parts[1]
+  } else {
+    $hour = [int]$text
+    $actualHour = if ($hour -eq 24) { 0 } else { $hour }
+    $minute = 0
+  }
+  $triggerTime = (Get-Date).Date.AddHours($actualHour).AddMinutes($minute)
+  $triggers += New-ScheduledTaskTrigger -Daily -At $triggerTime
+}
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description ${psSingleQuote(target.description)} -Force | Out-Null
+if (${isEnabled ? '$true' : '$false'}) {
+  Enable-ScheduledTask -TaskName $TaskName | Out-Null
+} else {
+  Disable-ScheduledTask -TaskName $TaskName | Out-Null
+}
+$task = Get-ScheduledTask -TaskName $TaskName
+$info = Get-ScheduledTaskInfo -TaskName $TaskName
+[pscustomobject]@{
+  exists = $true
+  enabled = ($task.State -ne 'Disabled')
+  state = $task.State.ToString()
+  hours = $Times
+  nextRunTime = if ($info.NextRunTime) { $info.NextRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+  lastRunTime = if ($info.LastRunTime -and $info.LastRunTime.Year -gt 2000) { $info.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+  lastTaskResult = $info.LastTaskResult
+} | ConvertTo-Json -Compress
+`
+  const status = await runPowerShellJson(script)
+  return {
+    ...status,
+    type: target.key,
+    label: target.label,
+    hours: normalizeAutoApprovalHours(status?.hours),
+    allowedRouteIds: getAutoApprovalAllowedRouteIds(target.key),
+  }
+}
+
+function readAutoApprovalNotifications(): any[] {
+  try {
+    if (!fs.existsSync(AUTO_APPROVAL_NOTIFICATION_PATH)) return []
+    const raw = fs.readFileSync(AUTO_APPROVAL_NOTIFICATION_PATH, 'utf8').replace(/^\uFEFF/, '')
+    const data = JSON.parse(raw)
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data.notifications)) return data.notifications
+  } catch (error: any) {
+    console.warn('[AutoApproval] notification read failed:', error.message)
+  }
+  return []
+}
+
+function clearAutoApprovalNotifications(): any[] {
+  try {
+    if (fs.existsSync(AUTO_APPROVAL_NOTIFICATION_PATH)) {
+      fs.writeFileSync(AUTO_APPROVAL_NOTIFICATION_PATH, JSON.stringify({ notifications: [] }, null, 2), 'utf8')
+    }
+  } catch (error: any) {
+    console.warn('[AutoApproval] notification clear failed:', error.message)
+    throw error
+  }
+  return []
 }
 
 import icon from '../../resources/icon.png?asset'
@@ -133,6 +412,47 @@ app.whenReady().then(() => {
 
   ipcMain.on('ping', () => console.log('pong'))
   ipcMain.handle('app-version', () => app.getVersion())
+
+  ipcMain.handle('auto-approval-status', async (_, type?: string) => {
+    return await getAutoApprovalStatus(type)
+  })
+
+  ipcMain.handle('auto-approval-set-enabled', async (_, type: string | boolean, enabled?: boolean) => {
+    if (typeof type === 'boolean' && enabled === undefined) {
+      enabled = type
+      type = 'work_time'
+    }
+    return await configureAutoApproval(type as string, {
+      enabled: !!enabled,
+      hours: (await getAutoApprovalStatus(type as string)).hours,
+    })
+  })
+
+  ipcMain.handle('auto-approval-set-hours', async (_, type: string | unknown[], hours?: unknown[]) => {
+    if (Array.isArray(type) && hours === undefined) {
+      hours = type
+      type = 'work_time'
+    }
+    const current = await getAutoApprovalStatus(type as string)
+    return await configureAutoApproval(type as string, { enabled: !!current.enabled, hours })
+  })
+
+  ipcMain.handle('auto-approval-set-routes', async (_, type: string | unknown[], routeIds?: unknown[]) => {
+    if (Array.isArray(type) && routeIds === undefined) {
+      routeIds = type
+      type = 'work_time'
+    }
+    setAutoApprovalAllowedRouteIds(type as string, routeIds)
+    return await getAutoApprovalStatus(type as string)
+  })
+
+  ipcMain.handle('auto-approval-notifications-get', async () => {
+    return readAutoApprovalNotifications()
+  })
+
+  ipcMain.handle('auto-approval-notifications-clear', async () => {
+    return clearAutoApprovalNotifications()
+  })
 
   // ─── ユーザー情報取得（フロントエンド共通） ─────────────────────
   ipcMain.handle('api-get-user-info', async () => {
@@ -1006,10 +1326,11 @@ app.whenReady().then(() => {
       return ''
     }
 
-    // 3種別を並列でフェッチ
-    const [overtimeData, paidHolidayData, monthlyData] = await Promise.all([
+    // 4種別を並列でフェッチ
+    const [overtimeData, paidHolidayData, workTimeData, monthlyData] = await Promise.all([
       fetchListAndDetails('overtime_works', 'overtime_works'),
       fetchListAndDetails('paid_holidays', 'paid_holidays'),
+      fetchListAndDetails('work_times', 'work_times'),
       fetchListAndDetails('monthly_attendances', 'monthly_attendances'),
     ])
 
@@ -1040,6 +1361,21 @@ app.whenReady().then(() => {
         applicationNumber: merged(raw, detail, 'application_number') ?? null,
         targetDate: merged(raw, detail, 'target_date') || '',
         usageType: usageRaw ? (usageTypeLabel[usageRaw] || usageRaw) : '',
+        comment: merged(raw, detail, 'comment') || '',
+        routeName: resolveRouteName(raw, detail),
+      })
+    }
+
+    // 勤務時間修正
+    for (const { raw, detail } of workTimeData) {
+      results.push({
+        type: 'work_time',
+        id: raw.id,
+        status: merged(raw, detail, 'status') || raw.status,
+        applicationNumber: merged(raw, detail, 'application_number') ?? null,
+        targetDate: merged(raw, detail, 'target_date') || '',
+        startAt: merged(raw, detail, 'start_at') || '',
+        endAt: merged(raw, detail, 'end_at') || '',
         comment: merged(raw, detail, 'comment') || '',
         routeName: resolveRouteName(raw, detail),
       })

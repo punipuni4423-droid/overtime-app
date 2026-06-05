@@ -12,6 +12,9 @@ import {
   Trash2,
   ShieldCheck,
   X,
+  Clock3,
+  ListChecks,
+  Power,
 } from 'lucide-react'
 import { useNameMap } from '../hooks/useNameMap'
 import { NameMapEditModal } from './NameMapEditModal'
@@ -19,6 +22,8 @@ import { useApprovalsCache } from '../hooks/useApprovalsCache'
 import { useLoginVerified, checkLoginGate } from '../hooks/useLoginVerified'
 
 type ApprovalType = 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+type AutoApprovalType = 'overtime' | 'paid_holiday' | 'work_time'
+type AutoApprovalHour = number | string
 
 const TYPE_LABEL: Record<ApprovalType, string> = {
   overtime: '残業',
@@ -48,7 +53,7 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 type StatusFilter = 'in_progress' | 'approved' | 'mine_to_approve' | 'feedback'
-type SubTab = 'overtime' | 'paid_holiday' | 'monthly_attendance'
+type SubTab = 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
 
 const FILTER_BUTTONS: { key: StatusFilter; label: string }[] = [
   { key: 'in_progress', label: '承認待ち' },
@@ -60,8 +65,42 @@ const FILTER_BUTTONS: { key: StatusFilter; label: string }[] = [
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'overtime', label: '残業申請' },
   { key: 'paid_holiday', label: '有給申請' },
+  { key: 'work_time', label: '勤務時間修正' },
   { key: 'monthly_attendance', label: '月次締め' },
 ]
+
+const AUTO_APPROVAL_TAB_LABELS: Partial<Record<SubTab, string>> = {
+  overtime: '残業申請',
+  paid_holiday: '有給申請',
+  work_time: '勤務時間修正',
+}
+
+const AUTO_APPROVAL_HOURS: AutoApprovalHour[] = [
+  ...Array.from({ length: 16 }, (_, i) => i + 9),
+  '14:12',
+].sort((a, b) => autoApprovalMinutes(a) - autoApprovalMinutes(b))
+
+function autoApprovalMinutes(value: AutoApprovalHour): number {
+  if (typeof value === 'string') {
+    const [hh, mm] = value.split(':').map(Number)
+    return hh * 60 + mm
+  }
+  return value * 60
+}
+
+function formatAutoApprovalHour(value: AutoApprovalHour): string {
+  if (typeof value === 'string') return value
+  return value === 24 ? '24:00' : `${value}:00`
+}
+
+function sameAutoApprovalHour(a: AutoApprovalHour, b: AutoApprovalHour): boolean {
+  return String(a) === String(b)
+}
+
+interface ApprovalRouteOption {
+  id: number
+  name: string
+}
 
 function formatTargetDate(type: ApprovalType, targetDate: string): string {
   if (!targetDate) return '—'
@@ -98,7 +137,7 @@ interface EditTarget {
 }
 
 interface MyRequestRaw {
-  type: 'overtime' | 'paid_holiday' | 'monthly_attendance'
+  type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
   id: number
   status: string
   targetDate: string
@@ -131,6 +170,34 @@ export function Approvals(): React.JSX.Element {
   const [opProgress, setOpProgress] = useState<{ current: number; total: number } | null>(null)
   const [opMessage, setOpMessage] = useState<string | null>(null)
   const [opError, setOpError] = useState<string | null>(null)
+  const [routes, setRoutes] = useState<ApprovalRouteOption[]>([])
+  const [autoApproval, setAutoApproval] = useState<{
+    loading: boolean
+    saving: boolean
+    expanded: boolean
+    routeExpanded: boolean
+    enabled: boolean
+    hours: AutoApprovalHour[]
+    pendingHours: AutoApprovalHour[]
+    allowedRouteIds: number[]
+    pendingRouteIds: number[]
+    nextRunTime: string
+    message: string | null
+    error: string | null
+  }>({
+    loading: false,
+    saving: false,
+    expanded: false,
+    routeExpanded: false,
+    enabled: false,
+    hours: [12, 24],
+    pendingHours: [12, 24],
+    allowedRouteIds: [],
+    pendingRouteIds: [],
+    nextRunTime: '',
+    message: null,
+    error: null,
+  })
 
   // マウント時にフェッチ（タブ切替で再マウントされるため毎回最新データを取得）
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -148,6 +215,143 @@ export function Approvals(): React.JSX.Element {
     setSubTab(t)
     setSelected(new Set())
   }, [])
+
+  const loadAutoApproval = useCallback(async (): Promise<void> => {
+    if (!AUTO_APPROVAL_TAB_LABELS[subTab]) return
+    setAutoApproval((prev) => ({ ...prev, loading: true, error: null, message: null }))
+    try {
+      const [status, userInfo] = await Promise.all([
+        window.api.getAutoApprovalStatus(subTab as AutoApprovalType),
+        window.api.getUserInfo(),
+      ])
+      const routeData = await window.api.fetchRoutes(userInfo.companyId)
+      const nextRoutes = (routeData?.approval_flow_routes || routeData?.routes || [])
+        .map((route: any) => ({ id: Number(route.id), name: String(route.name || '') }))
+        .filter((route: ApprovalRouteOption) => Number.isInteger(route.id) && route.id > 0)
+      const hours = Array.isArray(status?.hours) && status.hours.length > 0 ? status.hours : [12, 24]
+      const allowedRouteIds = Array.isArray(status?.allowedRouteIds) ? status.allowedRouteIds : []
+      setRoutes(nextRoutes)
+      setAutoApproval((prev) => ({
+        ...prev,
+        loading: false,
+        enabled: !!status?.enabled,
+        hours,
+        pendingHours: hours,
+        allowedRouteIds,
+        pendingRouteIds: allowedRouteIds,
+        nextRunTime: status?.nextRunTime || '',
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '自動承認設定の取得に失敗しました'
+      setAutoApproval((prev) => ({ ...prev, loading: false, error: message }))
+    }
+  }, [subTab])
+
+  useEffect(() => {
+    if (filter === 'mine_to_approve' && AUTO_APPROVAL_TAB_LABELS[subTab]) {
+      loadAutoApproval()
+    }
+  }, [filter, subTab, loadAutoApproval])
+
+  const toggleAutoApprovalEnabled = async (): Promise<void> => {
+    if (!AUTO_APPROVAL_TAB_LABELS[subTab]) return
+    setAutoApproval((prev) => ({ ...prev, saving: true, error: null, message: null }))
+    try {
+      const status = await window.api.setAutoApprovalEnabled(
+        subTab as AutoApprovalType,
+        !autoApproval.enabled,
+      )
+      const hours = Array.isArray(status?.hours) && status.hours.length > 0 ? status.hours : [12, 24]
+      const allowedRouteIds = Array.isArray(status?.allowedRouteIds) ? status.allowedRouteIds : []
+      setAutoApproval((prev) => ({
+        ...prev,
+        saving: false,
+        enabled: !!status?.enabled,
+        hours,
+        pendingHours: hours,
+        allowedRouteIds,
+        pendingRouteIds: allowedRouteIds,
+        nextRunTime: status?.nextRunTime || '',
+        message: status?.enabled ? '自動承認を有効化しました。' : '自動承認を無効化しました。',
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '自動承認設定の保存に失敗しました'
+      setAutoApproval((prev) => ({ ...prev, saving: false, error: message }))
+    }
+  }
+
+  const toggleAutoApprovalHour = (hour: AutoApprovalHour): void => {
+    setAutoApproval((prev) => {
+      const exists = prev.pendingHours.some((value) => sameAutoApprovalHour(value, hour))
+      const pendingHours = exists
+        ? prev.pendingHours.filter((value) => !sameAutoApprovalHour(value, hour))
+        : [...prev.pendingHours, hour].sort((a, b) => autoApprovalMinutes(a) - autoApprovalMinutes(b))
+      return { ...prev, pendingHours, error: null, message: null }
+    })
+  }
+
+  const saveAutoApprovalHours = async (): Promise<void> => {
+    if (!AUTO_APPROVAL_TAB_LABELS[subTab]) return
+    if (autoApproval.pendingHours.length === 0) {
+      setAutoApproval((prev) => ({ ...prev, error: '実行時刻を1つ以上選択してください。' }))
+      return
+    }
+    setAutoApproval((prev) => ({ ...prev, saving: true, error: null, message: null }))
+    try {
+      const status = await window.api.setAutoApprovalHours(
+        subTab as AutoApprovalType,
+        autoApproval.pendingHours,
+      )
+      const hours = Array.isArray(status?.hours) && status.hours.length > 0 ? status.hours : [12, 24]
+      setAutoApproval((prev) => ({
+        ...prev,
+        saving: false,
+        hours,
+        pendingHours: hours,
+        nextRunTime: status?.nextRunTime || '',
+        message: '実行時刻を保存しました。',
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '実行時刻の保存に失敗しました'
+      setAutoApproval((prev) => ({ ...prev, saving: false, error: message }))
+    }
+  }
+
+  const toggleAutoApprovalRoute = (routeId: number): void => {
+    setAutoApproval((prev) => {
+      const exists = prev.pendingRouteIds.includes(routeId)
+      const pendingRouteIds = exists
+        ? prev.pendingRouteIds.filter((id) => id !== routeId)
+        : [...prev.pendingRouteIds, routeId].sort((a, b) => a - b)
+      return { ...prev, pendingRouteIds, error: null, message: null }
+    })
+  }
+
+  const saveAutoApprovalRoutes = async (): Promise<void> => {
+    if (!AUTO_APPROVAL_TAB_LABELS[subTab]) return
+    if (autoApproval.pendingRouteIds.length === 0) {
+      setAutoApproval((prev) => ({ ...prev, error: '承認経路を1つ以上選択してください。' }))
+      return
+    }
+    setAutoApproval((prev) => ({ ...prev, saving: true, error: null, message: null }))
+    try {
+      const status = await window.api.setAutoApprovalRoutes(
+        subTab as AutoApprovalType,
+        autoApproval.pendingRouteIds,
+      )
+      const allowedRouteIds = Array.isArray(status?.allowedRouteIds) ? status.allowedRouteIds : []
+      setAutoApproval((prev) => ({
+        ...prev,
+        saving: false,
+        allowedRouteIds,
+        pendingRouteIds: allowedRouteIds,
+        message: '承認経路を保存しました。',
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '承認経路の保存に失敗しました'
+      setAutoApproval((prev) => ({ ...prev, saving: false, error: message }))
+    }
+  }
 
   // 自分の申請（旧 MyRequests）の一覧
   const myRequestsBySubTab = useMemo(() => {
@@ -198,6 +402,7 @@ export function Approvals(): React.JSX.Element {
       return {
         overtime: baseMine.filter((r) => r.type === 'overtime').length,
         paid_holiday: baseMine.filter((r) => r.type === 'paid_holiday').length,
+        work_time: baseMine.filter((r) => r.type === 'work_time').length,
         monthly_attendance: baseMine.filter((r) => r.type === 'monthly_attendance').length,
       }
     }
@@ -210,6 +415,7 @@ export function Approvals(): React.JSX.Element {
       overtime: cache.approvals.filter((it) => baseFilter(it) && it.type === 'overtime').length,
       paid_holiday: cache.approvals.filter((it) => baseFilter(it) && it.type === 'paid_holiday')
         .length,
+      work_time: cache.approvals.filter((it) => baseFilter(it) && it.type === 'work_time').length,
       monthly_attendance: cache.approvals.filter(
         (it) => baseFilter(it) && it.type === 'monthly_attendance',
       ).length,
@@ -483,6 +689,160 @@ export function Approvals(): React.JSX.Element {
         </div>
       )}
 
+      {filter === 'mine_to_approve' && AUTO_APPROVAL_TAB_LABELS[subTab] && (
+        <div className="mx-6 mt-3 mb-1 px-4 py-3 bg-white border border-gray-200 rounded-lg shrink-0">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Power size={15} className={autoApproval.enabled ? 'text-[#007B7E]' : 'text-gray-400'} />
+                <span className="text-sm font-semibold text-gray-800">
+                  {AUTO_APPROVAL_TAB_LABELS[subTab]} 自動承認
+                </span>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                    autoApproval.enabled
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-gray-50 text-gray-500 border-gray-200'
+                  }`}
+                >
+                  {autoApproval.enabled ? '有効' : '無効'}
+                </span>
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500">
+                {autoApproval.hours.map(formatAutoApprovalHour).join(' / ')}
+                {autoApproval.nextRunTime ? ` ・ 次回 ${autoApproval.nextRunTime}` : ''}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={toggleAutoApprovalEnabled}
+                disabled={autoApproval.loading || autoApproval.saving}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-50 ${
+                  autoApproval.enabled
+                    ? 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    : 'bg-[#007B7E] text-white border-[#007B7E] hover:bg-[#006669]'
+                }`}
+              >
+                <Power size={13} />
+                {autoApproval.enabled ? '無効化' : '有効化'}
+              </button>
+              <button
+                onClick={() => setAutoApproval((prev) => ({ ...prev, expanded: !prev.expanded, error: null, message: null }))}
+                disabled={autoApproval.loading}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#007B7E] border border-[#007B7E] rounded-lg hover:bg-[#007b7e10] disabled:opacity-50"
+              >
+                <Clock3 size={13} />
+                時間設定
+              </button>
+              <button
+                onClick={() => setAutoApproval((prev) => ({ ...prev, routeExpanded: !prev.routeExpanded, error: null, message: null }))}
+                disabled={autoApproval.loading}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#007B7E] border border-[#007B7E] rounded-lg hover:bg-[#007b7e10] disabled:opacity-50"
+              >
+                <ListChecks size={13} />
+                経路設定
+              </button>
+            </div>
+          </div>
+
+          {autoApproval.expanded && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(82px, 1fr))' }}>
+                {AUTO_APPROVAL_HOURS.map((hour) => {
+                  const checked = autoApproval.pendingHours.some((value) => sameAutoApprovalHour(value, hour))
+                  return (
+                    <label
+                      key={String(hour)}
+                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-xs cursor-pointer ${
+                        checked
+                          ? 'bg-[#007b7e10] border-[#007B7E] text-[#007B7E]'
+                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleAutoApprovalHour(hour)}
+                        className="w-3 h-3 accent-[#007B7E]"
+                      />
+                      {formatAutoApprovalHour(hour)}
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="mt-2 flex justify-end">
+                <button
+                  onClick={saveAutoApprovalHours}
+                  disabled={autoApproval.saving}
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-[#007B7E] rounded-lg hover:bg-[#006669] disabled:opacity-50"
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+          )}
+
+          {autoApproval.routeExpanded && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <div className="max-h-44 overflow-y-auto grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+                {routes.map((route) => {
+                  const checked = autoApproval.pendingRouteIds.includes(route.id)
+                  return (
+                    <label
+                      key={route.id}
+                      className={`flex items-start gap-2 px-2 py-1.5 rounded border text-xs cursor-pointer ${
+                        checked
+                          ? 'bg-[#007b7e10] border-[#007B7E] text-[#007B7E]'
+                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleAutoApprovalRoute(route.id)}
+                        className="mt-0.5 w-3 h-3 accent-[#007B7E]"
+                      />
+                      <span className="min-w-0">
+                        <span className="font-mono text-[10px] text-gray-400 mr-1">{route.id}</span>
+                        {route.name}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="mt-2 flex justify-end">
+                <button
+                  onClick={saveAutoApprovalRoutes}
+                  disabled={autoApproval.saving || routes.length === 0}
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-[#007B7E] rounded-lg hover:bg-[#006669] disabled:opacity-50"
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(autoApproval.message || autoApproval.error) && (
+            <div
+              className={`mt-2 px-3 py-2 rounded-lg border text-xs flex items-start gap-2 ${
+                autoApproval.error
+                  ? 'bg-red-50 border-red-200 text-red-700'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+              }`}
+            >
+              <span className="flex-1">{autoApproval.error || autoApproval.message}</span>
+              <button
+                onClick={() => setAutoApproval((prev) => ({ ...prev, error: null, message: null }))}
+                className="shrink-0 p-0.5 rounded hover:bg-white/70"
+                title="閉じる"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* エラー */}
       {cache.error && (
         <div className="mx-6 mb-3 px-4 py-3 bg-red-50 border border-red-200 rounded-lg shrink-0">
@@ -682,12 +1042,12 @@ function ApprovalsTable({
   // 列構成（残業：申請者→対象日→残業時間→申請日→申請経路→コメント→操作）
   type Col = { key: string; label: string; width: string }
   const buildColumns = (): Col[] => {
-    if (subTab === 'overtime') {
+    if (subTab === 'overtime' || subTab === 'work_time') {
       return [
         { key: 'appNo', label: '申請No.', width: '8%' },
         { key: 'applicant', label: '申請者', width: '18%' },
         { key: 'targetDate', label: '対象日', width: '9%' },
-        { key: 'overtime', label: '残業時間', width: '12%' },
+        { key: 'overtime', label: subTab === 'work_time' ? '修正時間' : '残業時間', width: '12%' },
         { key: 'issueDate', label: '申請日', width: '9%' },
         { key: 'route', label: '申請経路', width: '18%' },
         { key: 'comment', label: 'コメント', width: '18%' },
@@ -800,10 +1160,10 @@ function ApprovalsTable({
                     <div className="text-[10px] text-gray-400 truncate">ID:{item.applicantId}</div>
                   )}
                 </td>
-                {subTab === 'overtime' && (
+                {(subTab === 'overtime' || subTab === 'work_time') && (
                   <td className="px-2 py-2 text-gray-700 whitespace-nowrap">{targetText}</td>
                 )}
-                {subTab === 'overtime' && (
+                {(subTab === 'overtime' || subTab === 'work_time') && (
                   <td className="px-2 py-2 font-mono text-gray-700 whitespace-nowrap">
                     {overtimeText}
                   </td>
@@ -813,7 +1173,7 @@ function ApprovalsTable({
                     {usageText}
                   </td>
                 )}
-                {subTab !== 'overtime' && (
+                {subTab !== 'overtime' && subTab !== 'work_time' && (
                   <td className="px-2 py-2 text-gray-700 whitespace-nowrap">{targetText}</td>
                 )}
                 <td className="px-2 py-2 text-gray-500 whitespace-nowrap">{issueText}</td>
@@ -878,12 +1238,12 @@ function MyRequestsTable({
 }: MyRequestsTableProps): React.JSX.Element {
   type Col = { key: string; label: string; width: string }
   const buildColumns = (): Col[] => {
-    if (subTab === 'overtime') {
+    if (subTab === 'overtime' || subTab === 'work_time') {
       return [
         { key: 'appNo', label: '申請No.', width: '8%' },
         { key: 'status', label: '状態', width: '12%' },
         { key: 'targetDate', label: '対象日', width: '12%' },
-        { key: 'overtime', label: '残業時間', width: '14%' },
+        { key: 'overtime', label: subTab === 'work_time' ? '修正時間' : '残業時間', width: '14%' },
         { key: 'route', label: '申請経路', width: '20%' },
         { key: 'comment', label: 'コメント', width: '26%' },
         { key: 'action', label: '操作', width: '8%' },
@@ -975,7 +1335,7 @@ function MyRequestsTable({
                   </span>
                 </td>
                 <td className="px-2 py-2 text-gray-700 whitespace-nowrap">{targetText}</td>
-                {subTab === 'overtime' && (
+                {(subTab === 'overtime' || subTab === 'work_time') && (
                   <td className="px-2 py-2 font-mono text-gray-700 whitespace-nowrap">
                     {overtimeText}
                   </td>

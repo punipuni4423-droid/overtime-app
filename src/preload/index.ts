@@ -85,6 +85,18 @@ const api = {
   // App version
   getAppVersion: () => ipcRenderer.invoke('app-version'),
 
+  // Auto approval
+  getAutoApprovalStatus: (type?: 'overtime' | 'paid_holiday' | 'work_time') =>
+    ipcRenderer.invoke('auto-approval-status', type),
+  setAutoApprovalEnabled: (type: 'overtime' | 'paid_holiday' | 'work_time', enabled: boolean) =>
+    ipcRenderer.invoke('auto-approval-set-enabled', type, enabled),
+  setAutoApprovalHours: (type: 'overtime' | 'paid_holiday' | 'work_time', hours: Array<number | string>) =>
+    ipcRenderer.invoke('auto-approval-set-hours', type, hours),
+  setAutoApprovalRoutes: (type: 'overtime' | 'paid_holiday' | 'work_time', routeIds: number[]) =>
+    ipcRenderer.invoke('auto-approval-set-routes', type, routeIds),
+  getAutoApprovalNotifications: () => ipcRenderer.invoke('auto-approval-notifications-get'),
+  clearAutoApprovalNotifications: () => ipcRenderer.invoke('auto-approval-notifications-clear'),
+
   // Auto-update
   onUpdateAvailable: (callback: (version: string) => void) =>
     ipcRenderer.on('update-available', (_e, version) => callback(version)),

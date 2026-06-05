@@ -17,6 +17,19 @@ interface TokenStatus {
   refreshIsExpired: boolean
 }
 
+interface AutoApprovalStatus {
+  exists: boolean
+  enabled: boolean
+  state: string
+  hours: Array<number | string>
+  nextRunTime: string
+  lastRunTime: string
+  lastTaskResult: number | null
+  type: 'overtime' | 'paid_holiday' | 'work_time'
+  label: string
+  allowedRouteIds: number[]
+}
+
 interface ApprovalLog {
   userId: number | null
   userName: string
@@ -166,6 +179,25 @@ interface Window {
 
     // App version
     getAppVersion: () => Promise<string>
+
+    // Auto approval
+    getAutoApprovalStatus: (
+      type?: 'overtime' | 'paid_holiday' | 'work_time'
+    ) => Promise<AutoApprovalStatus>
+    setAutoApprovalEnabled: (
+      type: 'overtime' | 'paid_holiday' | 'work_time',
+      enabled: boolean
+    ) => Promise<AutoApprovalStatus>
+    setAutoApprovalHours: (
+      type: 'overtime' | 'paid_holiday' | 'work_time',
+      hours: Array<number | string>
+    ) => Promise<AutoApprovalStatus>
+    setAutoApprovalRoutes: (
+      type: 'overtime' | 'paid_holiday' | 'work_time',
+      routeIds: number[]
+    ) => Promise<AutoApprovalStatus>
+    getAutoApprovalNotifications: () => Promise<any[]>
+    clearAutoApprovalNotifications: () => Promise<any[]>
 
     // Auto-update
     onUpdateAvailable: (callback: (version: string) => void) => void

@@ -7,6 +7,11 @@ files:
   - out/**/*
   - package.json
   - resources/**/*
+extraResources:
+  - from: scripts/auto-approve-work-time.mjs
+    to: auto-approval/auto-approve-work-time.mjs
+  - from: node_modules/playwright-core
+    to: auto-approval/node_modules/playwright-core
 asar: true
 win:
   executableName: 残業申請ツール

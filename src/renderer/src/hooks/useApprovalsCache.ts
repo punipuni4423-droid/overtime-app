@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 
 interface MyRequestRaw {
-  type: 'overtime' | 'paid_holiday' | 'monthly_attendance'
+  type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
   id: number
   status: string
   targetDate: string

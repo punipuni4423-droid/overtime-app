@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Settings as SettingsIcon, Download } from 'lucide-react'
+import { Settings as SettingsIcon, Download, AlertTriangle, X } from 'lucide-react'
 import { Dashboard } from './components/Dashboard'
 import { PaidLeave } from './components/PaidLeave'
 import { Approvals } from './components/Approvals'
@@ -20,11 +20,44 @@ function App() {
   const [view, setView] = useState<MainView | 'settings'>('overtime')
   const [prevView, setPrevView] = useState<MainView>('overtime')
   const [updateInfo, setUpdateInfo] = useState<{ version: string; downloaded: boolean } | null>(null)
+  const [autoApprovalNotifications, setAutoApprovalNotifications] = useState<any[]>([])
 
   useEffect(() => {
     window.api.onUpdateAvailable((version) => setUpdateInfo({ version, downloaded: false }))
     window.api.onUpdateDownloaded((version) => setUpdateInfo({ version, downloaded: true }))
   }, [])
+
+  useEffect(() => {
+    window.api
+      .getUserInfo()
+      .then((info) => window.api.fetchRoutes(info.companyId))
+      .catch(() => {
+        // 認証前の起動では取得できないため、設定画面や申請画面で再取得する
+      })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadNotifications = async (): Promise<void> => {
+      try {
+        const notices = await window.api.getAutoApprovalNotifications()
+        if (!cancelled) setAutoApprovalNotifications(Array.isArray(notices) ? notices : [])
+      } catch {
+        // 通知取得の失敗は通常操作を妨げない
+      }
+    }
+    loadNotifications()
+    const timer = window.setInterval(loadNotifications, 30000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const clearAutoApprovalNotifications = async (): Promise<void> => {
+    await window.api.clearAutoApprovalNotifications()
+    setAutoApprovalNotifications([])
+  }
 
   const openSettings = () => {
     setPrevView((view === 'settings' ? prevView : view) as MainView)
@@ -61,6 +94,50 @@ function App() {
               再起動して更新
             </button>
           )}
+        </div>
+      )}
+      {autoApprovalNotifications.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 px-4">
+          <div className="w-full max-w-xl bg-white border border-red-200 rounded-lg shadow-xl overflow-hidden">
+            <div className="flex items-start gap-3 px-4 py-3 bg-red-50 border-b border-red-100">
+              <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-bold text-red-800">自動承認エラー</div>
+                <div className="text-xs text-red-700 mt-0.5">
+                  承認経路が一致しない申請があるため、自動承認を停止しました。
+                </div>
+              </div>
+              <button
+                onClick={clearAutoApprovalNotifications}
+                className="p-1 rounded hover:bg-red-100 text-red-700"
+                title="閉じる"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="max-h-80 overflow-y-auto px-4 py-3 text-xs text-gray-700 space-y-3">
+              {autoApprovalNotifications.map((notice) => (
+                <div key={notice.id || notice.createdAt} className="border border-gray-200 rounded-lg p-3">
+                  <div className="font-semibold text-gray-800">{notice.title || notice.requestTypeLabel}</div>
+                  <div className="mt-1 text-gray-500">{notice.message}</div>
+                  {(notice.items || []).map((item: any) => (
+                    <div key={item.key || item.requestId} className="mt-2 p-2 bg-gray-50 rounded border border-gray-100">
+                      <div>申請No. {item.applicationNumber ?? item.requestId}</div>
+                      <div className="mt-0.5">現在の経路: {item.routeName || item.routeId || '未設定'}</div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="px-4 py-3 border-t border-gray-100 flex justify-end">
+              <button
+                onClick={clearAutoApprovalNotifications}
+                className="px-3 py-1.5 bg-[#007B7E] text-white rounded-lg text-xs font-bold hover:bg-[#006669] transition-colors"
+              >
+                確認
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {/* タブヘッダー */}
