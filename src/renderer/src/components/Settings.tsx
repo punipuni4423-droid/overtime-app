@@ -162,24 +162,35 @@ export function Settings({ onBack }: Props) {
     }
 
     return (
-        <div className="h-screen overflow-y-auto custom-scrollbar bg-[#f7f9fa] flex flex-col">
-            <div className="max-w-md mx-auto w-full p-6 md:p-8">
-                <div className="flex items-center mb-6">
+        <div className="h-screen overflow-y-auto custom-scrollbar bg-[#f7f9fa]">
+            <div className="mx-auto w-full max-w-6xl px-4 py-4 md:px-6">
+                <div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center justify-between gap-3 border-b border-gray-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur md:-mx-6 md:px-6">
+                    <div className="flex min-w-0 items-center">
                     <button 
                         onClick={onBack} 
-                        className="p-2 mr-3 rounded-full hover:bg-white hover:shadow-sm transition-all text-gray-600 hover:text-[#007B7E]"
+                        className="mr-3 rounded-lg p-2 text-gray-600 transition-all hover:bg-gray-100 hover:text-[#007B7E]"
                     >
                         <ArrowLeft size={24} />
                     </button>
-                    <h1 className="text-2xl font-bold text-gray-800 tracking-tight">設定</h1>
+                        <div className="min-w-0">
+                            <h1 className="text-xl font-bold tracking-tight text-gray-800">設定</h1>
+                            <div className="text-xs text-gray-400">バージョン {appVersion || '---'}</div>
+                        </div>
+                    </div>
+                    <button
+                        onClick={handleSave}
+                        className="shrink-0 rounded-lg bg-[#007B7E] px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#006669] active:scale-[0.98]"
+                    >
+                        {saved ? '保存しました' : '設定を保存'}
+                    </button>
                 </div>
 
-                <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
-                    <div className="p-6 md:p-8 space-y-8">
+                <div className="flex flex-col">
+                    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
 
 
                     {/* ── OAuth Credentials Section ── */}
-                    <div>
+                    <div className="order-1 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
                         <div className="flex items-center gap-2 mb-4">
                             <KeyRound size={18} className="text-[#007B7E]" />
                             <h2 className="text-base font-bold text-gray-800">OAuth2 認証情報</h2>
@@ -192,7 +203,7 @@ export function Settings({ onBack }: Props) {
                                     type="text"
                                     value={clientId}
                                     onChange={e => setClientId(e.target.value)}
-                                    className="w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-[#007B7E] focus:bg-white focus:border-[#007B7E] outline-none transition-all text-sm shadow-sm"
+                                    className="w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm shadow-sm outline-none transition-all focus:border-[#007B7E] focus:bg-white focus:ring-2 focus:ring-[#007B7E]"
                                     placeholder="freee アプリの Client ID"
                                 />
                             </div>
@@ -202,7 +213,7 @@ export function Settings({ onBack }: Props) {
                                     type="password"
                                     value={clientSecret}
                                     onChange={e => setClientSecret(e.target.value)}
-                                    className="w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-[#007B7E] focus:bg-white focus:border-[#007B7E] outline-none transition-all text-sm shadow-sm"
+                                    className="w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm shadow-sm outline-none transition-all focus:border-[#007B7E] focus:bg-white focus:ring-2 focus:ring-[#007B7E]"
                                     placeholder="freee アプリの Client Secret"
                                 />
                             </div>
@@ -210,7 +221,7 @@ export function Settings({ onBack }: Props) {
                     </div>
 
                     {/* ── Token Status Section ── */}
-                    <div>
+                    <div className="order-2 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
                         <div className="flex items-center gap-2 mb-3">
                             {tokenStatus?.hasToken && !tokenStatus?.refreshIsExpired ? (
                                 <ShieldCheck size={18} className="text-emerald-600" />
@@ -224,7 +235,7 @@ export function Settings({ onBack }: Props) {
                             <div className="space-y-2">
                                 {/* リフレッシュトークン状態（メイン表示） */}
                                 {tokenStatus.hasToken && !tokenStatus.refreshIsExpired ? (
-                                    <div className="p-3 rounded-xl text-sm border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
                                         <div className="flex items-center gap-2 font-semibold">
                                             <ShieldCheck size={14} />
                                             <span>認証済み（ログイン中）</span>
@@ -237,7 +248,7 @@ export function Settings({ onBack }: Props) {
                                         </p>
                                     </div>
                                 ) : tokenStatus.hasToken && tokenStatus.refreshIsExpired ? (
-                                    <div className="p-3 rounded-xl text-sm border bg-amber-50 text-amber-700 border-amber-200">
+                                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
                                         <div className="flex items-center gap-2 font-semibold">
                                             <ShieldAlert size={14} />
                                             <span>再認証が必要です</span>
@@ -245,7 +256,7 @@ export function Settings({ onBack }: Props) {
                                         <p className="mt-1 text-xs">リフレッシュトークンの有効期限が切れました。下のボタンから再認証してください。</p>
                                     </div>
                                 ) : (
-                                    <div className="p-3 rounded-xl text-sm border bg-red-50 text-red-700 border-red-200">
+                                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                                         <div className="flex items-center gap-2 font-semibold">
                                             <ShieldAlert size={14} />
                                             <span>未認証</span>
@@ -256,7 +267,7 @@ export function Settings({ onBack }: Props) {
 
                                 {/* アクセストークン詳細（折りたたみ感） */}
                                 {tokenStatus.hasToken && !tokenStatus.refreshIsExpired && (
-                                    <div className="px-3 py-2 rounded-lg text-xs border bg-gray-50 text-gray-500 border-gray-200 flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
                                         <Clock size={11} className="shrink-0" />
                                         {tokenStatus.isExpired
                                             ? 'アクセストークン：期限切れ（次回API使用時に自動更新）'
@@ -267,12 +278,12 @@ export function Settings({ onBack }: Props) {
                             </div>
                         )}
 
-                        <div className="flex gap-2 mt-3">
+                        <div className="mt-3 flex gap-2">
                             {/* OAuth認証ボタン：未認証またはリフレッシュトークン期限切れ時のみ有効 */}
                             <button
                                 onClick={handleStartAuth}
                                 disabled={authLoading || !clientId || !clientSecret || (tokenStatus?.hasToken && !tokenStatus?.refreshIsExpired)}
-                                className="flex-1 bg-[#007B7E] hover:bg-[#006669] disabled:bg-gray-200 disabled:cursor-not-allowed text-white p-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all text-sm active:scale-[0.98]"
+                                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-[#007B7E] p-3 text-sm font-bold text-white transition-all hover:bg-[#006669] active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-gray-200"
                             >
                                 {authLoading ? (
                                     <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
@@ -288,7 +299,7 @@ export function Settings({ onBack }: Props) {
                                 <button
                                     onClick={handleForceRefresh}
                                     disabled={refreshing}
-                                    className="bg-gray-100 hover:bg-gray-200 disabled:bg-gray-50 text-gray-700 p-3 rounded-xl font-medium flex items-center justify-center gap-1 transition-all text-sm active:scale-[0.98]"
+                                    className="flex items-center justify-center gap-1 rounded-lg bg-gray-100 p-3 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200 active:scale-[0.98] disabled:bg-gray-50"
                                     title="アクセストークンを手動更新"
                                 >
                                     <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
@@ -297,40 +308,40 @@ export function Settings({ onBack }: Props) {
                         </div>
 
                         {authMessage && (
-                            <div className="mt-2 text-sm text-emerald-700 bg-emerald-50 p-3 rounded-xl border border-emerald-200">
+                            <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
                                 {authMessage}
                             </div>
                         )}
 
                         {authError && (
-                            <div className="mt-2 text-sm text-red-700 bg-red-50 p-3 rounded-xl border border-red-200">
+                            <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                                 {authError}
                             </div>
                         )}
                     </div>
 
-                    <div className="border-t border-gray-100"></div>
+                    <div className="hidden"></div>
 
                     {/* ── アカウント情報（自動取得） ── */}
-                    <div className="space-y-3 pb-2">
+                    <div className="order-3 space-y-3 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
                         <h2 className="text-base font-bold text-gray-800 mb-2">アカウント情報</h2>
                         <p className="text-xs text-gray-500 -mt-1">OAuth認証後、APIから自動取得されます（手動入力不要）</p>
-                        <div className="grid grid-cols-3 gap-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 mb-1">Company ID</label>
-                                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 font-mono">
+                                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-sm text-gray-700">
                                     {companyId || '---'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 mb-1">User ID</label>
-                                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 font-mono">
+                                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-sm text-gray-700">
                                     {applicantId || '---'}
                                 </div>
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 mb-1">Employee ID</label>
-                                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700 font-mono">
+                                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-sm text-gray-700">
                                     {employeeId || '---'}
                                 </div>
                             </div>
@@ -343,7 +354,7 @@ export function Settings({ onBack }: Props) {
                             <select
                                 value={defaultDepartmentId}
                                 onChange={e => setDefaultDepartmentId(e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition bg-white text-sm"
+                                className="w-full rounded-lg border border-gray-300 bg-white p-3 text-sm outline-none transition focus:border-[#007B7E] focus:ring-2 focus:ring-[#007B7E]"
                             >
                                 <option value="">未設定</option>
                                 {DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
@@ -351,15 +362,15 @@ export function Settings({ onBack }: Props) {
                         </div>
                     </div>
 
-                    <div className="border-t border-gray-100"></div>
+                    <div className="hidden"></div>
 
                     {/* ── ID→名前マッピング ── */}
                     <NameMapSection />
 
-                    <div className="border-t border-gray-100"></div>
+                    <div className="hidden"></div>
 
                     {/* ── Web Login Section ── */}
-                    <div className="space-y-3 pb-2">
+                    <div className="order-4 space-y-3 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
                         <div className="flex items-center gap-2 mb-2">
                             <Globe size={16} className="text-[#007B7E]" />
                             <h2 className="text-base font-bold text-gray-800">Web版自動操作用ログイン情報</h2>
@@ -374,7 +385,7 @@ export function Settings({ onBack }: Props) {
                                 type="email"
                                 value={freeeEmail}
                                 onChange={e => setFreeeEmail(e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition text-sm"
+                                className="w-full rounded-lg border border-gray-300 p-3 text-sm outline-none transition focus:border-[#007B7E] focus:ring-2 focus:ring-[#007B7E]"
                                 placeholder="freee ログイン用メールアドレス"
                             />
                         </div>
@@ -384,7 +395,7 @@ export function Settings({ onBack }: Props) {
                                 type="password"
                                 value={freeePassword}
                                 onChange={e => setFreeePassword(e.target.value)}
-                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition text-sm"
+                                className="w-full rounded-lg border border-gray-300 p-3 text-sm outline-none transition focus:border-[#007B7E] focus:ring-2 focus:ring-[#007B7E]"
                                 placeholder="freee ログイン用パスワード"
                             />
                         </div>
@@ -392,7 +403,7 @@ export function Settings({ onBack }: Props) {
                         {/* ログイン確認状態 */}
                         {loginStatus.hasCredentials && (
                             <div
-                                className={`p-3 rounded-xl text-xs border flex items-start gap-2 ${
+                                className={`flex items-start gap-2 rounded-lg border p-3 text-xs ${
                                     loginStatus.verified
                                         ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                                         : 'bg-amber-50 text-amber-700 border-amber-200'
@@ -428,7 +439,7 @@ export function Settings({ onBack }: Props) {
                         <button
                             onClick={handleVerifyLogin}
                             disabled={verifying || !freeeEmail.trim() || !freeePassword}
-                            className="w-full bg-amber-500 hover:bg-amber-600 disabled:bg-gray-200 disabled:cursor-not-allowed text-white p-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all text-sm active:scale-[0.98]"
+                            className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 p-3 text-sm font-bold text-white transition-all hover:bg-amber-600 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-gray-200"
                         >
                             {verifying ? (
                                 <>
@@ -459,10 +470,10 @@ export function Settings({ onBack }: Props) {
                     </div>
 
                     {/* ── Save Button at the Bottom of Card ── */}
-                    <div className="p-6 bg-gray-50/50 border-t border-gray-100 rounded-b-3xl">
+                    <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
                         <button
                             onClick={handleSave}
-                            className="w-full bg-[#007B7E] hover:bg-[#006669] text-white p-4 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg shadow-[#007b7e30] active:scale-[0.98] hover:translate-y-[-1px]"
+                            className="flex w-full items-center justify-center gap-3 rounded-lg bg-[#007B7E] p-3 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#006669] active:scale-[0.98]"
                         >
                             {saved ? (
                                 <>
@@ -479,13 +490,8 @@ export function Settings({ onBack }: Props) {
                     </div>
                 </div>
                 
-                {/* Version */}
-                <div className="text-center text-xs text-gray-400 mt-2 mb-2">
-                    バージョン {appVersion || '---'}
-                </div>
-
                 {/* Extra padding at bottom */}
-                <div className="h-10"></div>
+                <div className="h-4"></div>
             </div>
         </div>
     )
@@ -543,7 +549,7 @@ function NameMapSection() {
     }
 
     return (
-        <div className="space-y-3 pb-2">
+        <div className="order-5 space-y-3 rounded-lg border border-gray-200 bg-white p-5 shadow-sm lg:col-span-2">
             <div className="flex items-center gap-2 mb-2">
                 <Users size={16} className="text-[#007B7E]" />
                 <h2 className="text-base font-bold text-gray-800">ID→名前マッピング</h2>
@@ -554,15 +560,15 @@ function NameMapSection() {
             </p>
 
             {/* 新規追加 */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
-                <div className="flex gap-2">
+            <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <div className="grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)_auto]">
                     <input
                         type="text"
                         inputMode="numeric"
                         value={newId}
                         onChange={(e) => setNewId(e.target.value)}
                         placeholder="ID（数字）"
-                        className="w-28 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition text-sm font-mono"
+                        className="w-full rounded-lg border border-gray-300 bg-white p-2.5 font-mono text-sm outline-none transition focus:border-[#007B7E] focus:ring-2 focus:ring-[#007B7E]"
                     />
                     <input
                         type="text"
@@ -575,7 +581,7 @@ function NameMapSection() {
                             }
                         }}
                         placeholder="表示名（例: 山田 太郎）"
-                        className="flex-1 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#007B7E] focus:border-[#007B7E] outline-none transition text-sm"
+                        className="min-w-0 rounded-lg border border-gray-300 bg-white p-2.5 text-sm outline-none transition focus:border-[#007B7E] focus:ring-2 focus:ring-[#007B7E]"
                     />
                     <button
                         onClick={handleAdd}
@@ -595,11 +601,11 @@ function NameMapSection() {
 
             {/* 一覧 */}
             {count === 0 ? (
-                <div className="text-center text-xs text-gray-400 py-4 bg-gray-50/60 border border-dashed border-gray-200 rounded-xl">
+                <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 py-4 text-center text-xs text-gray-400">
                     登録された名前はありません
                 </div>
             ) : (
-                <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="overflow-hidden rounded-lg border border-gray-200">
                     <table className="w-full text-sm">
                         <thead className="bg-gray-50 border-b border-gray-200">
                             <tr>

@@ -7,7 +7,7 @@ import axios from 'axios'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import { TokenManager, TokenAuthRequiredError } from './tokenManager'
-import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, cancelRequestBatchViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser } from './automation'
+import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, cancelRequestBatchViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser, fetchManagerOvertimeSummariesViaBrowser } from './automation'
 
 const store = new Store({
   defaults: {
@@ -40,9 +40,17 @@ const tokenManager = new TokenManager(store)
 // COMPANY_ID / APPLICANT_ID をストアから取得し、未設定の場合はAPIから自動解決して保存する。
 // アップデートでデフォルト値が変わっても、このヘルパーを通じて常に正しい値が得られる。
 // ユーザー情報キャッシュ（セッション中のみ有効、store には保存しない）
-let _cachedUserInfo: { companyId: number; applicantId: number; employeeId: number } | null = null
+type UserInfo = {
+  companyId: number
+  companyName: string
+  applicantId: number
+  employeeId: number
+  role: string
+}
 
-async function getUserInfo(token: string): Promise<{ companyId: number; applicantId: number; employeeId: number }> {
+let _cachedUserInfo: UserInfo | null = null
+
+async function getUserInfo(token: string): Promise<UserInfo> {
   if (_cachedUserInfo) return _cachedUserInfo
 
   const res = await axios.get('https://api.freee.co.jp/hr/api/v1/users/me', {
@@ -53,18 +61,72 @@ async function getUserInfo(token: string): Promise<{ companyId: number; applican
   if (companies.length === 0) throw new Error('freeeの会社情報が取得できませんでした。再認証してください。')
   const company = companies[0]
   const companyId: number = company.id
+  const companyName: string = company.name || ''
   const employeeId: number = company.employee_id  // employee_id（従業員ID）
+  const role: string = company.role || 'self_only'
 
   if (!companyId) throw new Error('会社IDが取得できませんでした。再認証してください。')
   if (!userId) throw new Error('申請者IDが取得できませんでした。再認証してください。')
 
-  _cachedUserInfo = { companyId, applicantId: userId, employeeId }
-  console.log(`[UserInfo] companyId=${companyId}, applicantId(userId)=${userId}, employeeId=${employeeId}`)
+  _cachedUserInfo = { companyId, companyName, applicantId: userId, employeeId, role }
+  console.log(`[UserInfo] companyId=${companyId}, applicantId(userId)=${userId}, employeeId=${employeeId}, role=${role}`)
   return _cachedUserInfo
+}
+
+const MANAGER_ROLES = new Set(['company_admin', 'admin', 'attendance_manager'])
+
+function isManagerRole(role: string | undefined | null): boolean {
+  return MANAGER_ROLES.has(String(role || '').trim())
+}
+
+function minutesValue(value: unknown): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : 0
+}
+
+function employeeDisplayName(employee: any): string {
+  return employee.display_name
+    || [employee.last_name, employee.first_name].filter(Boolean).join(' ')
+    || employee.name
+    || `ID:${employee.id ?? employee.employee_id ?? ''}`
+}
+
+function summarizeAxiosError(error: any): { status: number | null; message: string; data?: unknown } {
+  const status = error?.response?.status ?? null
+  const data = error?.response?.data
+  let message = error?.message || 'API request failed'
+  if (data?.message) {
+    message = data.message
+  } else if (Array.isArray(data?.errors) && data.errors[0]?.messages?.[0]) {
+    message = data.errors[0].messages[0]
+  }
+  return { status, message, data }
+}
+
+async function fetchEmployeesForManager(headers: any, companyId: number, year: number, month: number): Promise<any[]> {
+  const employees: any[] = []
+  let offset = 0
+  const limit = 100
+  while (true) {
+    const res = await axios.get('https://api.freee.co.jp/hr/api/v1/employees', {
+      headers,
+      params: { company_id: companyId, year, month, limit, offset },
+    })
+    const pageItems: any[] = res.data.employees || []
+    employees.push(...pageItems)
+    if (pageItems.length < limit) break
+    offset += limit
+  }
+  return employees
 }
 
 type AutoApprovalTypeKey = 'overtime' | 'paid_holiday' | 'work_time'
 type AutoApprovalHour = number | string
+type AutoApprovalPermissionScope = {
+  applicantKey?: string
+  itemKey?: string
+  requestId?: number
+}
 
 const AUTO_APPROVAL_SCRIPT = app.isPackaged
   ? join(process.resourcesPath, 'auto-approval', 'auto-approve-work-time.mjs')
@@ -74,6 +136,11 @@ const AUTO_APPROVAL_NOTIFICATION_PATH = join(
   process.env.APPDATA || join(os.homedir(), 'AppData', 'Roaming'),
   'overtime-app',
   'auto-approval-notifications.json',
+)
+const AUTO_APPROVAL_RUNNER_PATH = join(
+  process.env.APPDATA || join(os.homedir(), 'AppData', 'Roaming'),
+  'overtime-app',
+  'auto-approve-runner.vbs',
 )
 
 const AUTO_APPROVAL_TYPES: Record<
@@ -119,14 +186,16 @@ function normalizeAutoApprovalHours(hours: unknown): AutoApprovalHour[] {
         .map((h) => {
           if (typeof h === 'string' && /^\d{1,2}:\d{2}$/.test(h)) {
             const [hh, mm] = h.split(':').map(Number)
-            if (Number.isInteger(hh) && Number.isInteger(mm) && hh >= 9 && hh <= 23 && mm >= 0 && mm <= 59) {
-              return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+            if (Number.isInteger(hh) && Number.isInteger(mm) && mm === 0) {
+              if (hh === 0) return 24
+              if (hh >= 9 && hh <= 23) return hh
             }
+            return null
           }
           const hour = Number(h)
           return Number.isInteger(hour) && hour >= 9 && hour <= 24 ? hour : null
         })
-        .filter((h): h is AutoApprovalHour => h !== null),
+        .filter((h): h is number => h !== null),
     ),
   ).sort((a, b) => {
     const toMinutes = (value: AutoApprovalHour): number => {
@@ -261,13 +330,38 @@ $ErrorActionPreference = 'Stop'
 $TaskName = ${psSingleQuote(target.taskName)}
 $ScriptPath = ${psSingleQuote(AUTO_APPROVAL_SCRIPT)}
 $WorkDir = ${psSingleQuote(AUTO_APPROVAL_WORKDIR)}
+$RunnerPath = ${psSingleQuote(AUTO_APPROVAL_RUNNER_PATH)}
 $RequestType = ${psSingleQuote(target.key)}
 $Times = @(${timeList})
 $NodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $NodeCommand) { throw "node.exe が見つかりません。Node.jsをインストールしてください。" }
 $Node = $NodeCommand.Source
 if (-not (Test-Path $ScriptPath)) { throw "auto approval script not found: $ScriptPath" }
-$action = New-ScheduledTaskAction -Execute $Node -Argument ('"' + $ScriptPath + '" --execute --type ' + $RequestType) -WorkingDirectory $WorkDir
+$RunnerDir = Split-Path -Parent $RunnerPath
+if (-not (Test-Path $RunnerDir)) { New-Item -ItemType Directory -Path $RunnerDir -Force | Out-Null }
+@'
+Option Explicit
+Dim shell, args, nodePath, scriptPath, requestType, workDir, command, exitCode
+Set shell = CreateObject("WScript.Shell")
+Set args = WScript.Arguments
+If args.Count < 4 Then WScript.Quit 1
+nodePath = args(0)
+scriptPath = args(1)
+requestType = args(2)
+workDir = args(3)
+shell.CurrentDirectory = workDir
+command = Quote(nodePath) & " " & Quote(scriptPath) & " --execute --type " & Quote(requestType)
+exitCode = shell.Run(command, 0, True)
+WScript.Quit exitCode
+Function Quote(value)
+  Quote = """" & Replace(CStr(value), """", """""") & """"
+End Function
+'@ | Set-Content -LiteralPath $RunnerPath -Encoding ASCII
+$WscriptCommand = Get-Command wscript.exe -ErrorAction SilentlyContinue
+if (-not $WscriptCommand) { throw "wscript.exe が見つかりません。" }
+$Wscript = $WscriptCommand.Source
+$actionArgs = '"' + $RunnerPath + '" "' + $Node + '" "' + $ScriptPath + '" "' + $RequestType + '" "' + $WorkDir + '"'
+$action = New-ScheduledTaskAction -Execute $Wscript -Argument $actionArgs -WorkingDirectory $WorkDir
 $triggers = @()
 foreach ($time in $Times) {
   $text = [string]$time
@@ -313,6 +407,20 @@ $info = Get-ScheduledTaskInfo -TaskName $TaskName
   }
 }
 
+async function migrateExistingAutoApprovalTasks(): Promise<void> {
+  for (const type of Object.keys(AUTO_APPROVAL_TYPES) as AutoApprovalTypeKey[]) {
+    try {
+      const status = await getAutoApprovalStatus(type)
+      if (status?.exists) {
+        await configureAutoApproval(type, { enabled: !!status.enabled, hours: status.hours })
+        console.log(`[AutoApproval] migrated task to hidden runner: ${type}`)
+      }
+    } catch (error: any) {
+      console.warn(`[AutoApproval] task migration failed: ${type}`, error?.message || error)
+    }
+  }
+}
+
 function readAutoApprovalNotifications(): any[] {
   try {
     if (!fs.existsSync(AUTO_APPROVAL_NOTIFICATION_PATH)) return []
@@ -326,16 +434,146 @@ function readAutoApprovalNotifications(): any[] {
   return []
 }
 
+function writeAutoApprovalNotifications(notifications: any[]): any[] {
+  fs.mkdirSync(dirname(AUTO_APPROVAL_NOTIFICATION_PATH), { recursive: true })
+  const next = notifications.slice(-50)
+  fs.writeFileSync(AUTO_APPROVAL_NOTIFICATION_PATH, JSON.stringify({ notifications: next }, null, 2), 'utf8')
+  return next
+}
+
 function clearAutoApprovalNotifications(): any[] {
   try {
-    if (fs.existsSync(AUTO_APPROVAL_NOTIFICATION_PATH)) {
-      fs.writeFileSync(AUTO_APPROVAL_NOTIFICATION_PATH, JSON.stringify({ notifications: [] }, null, 2), 'utf8')
-    }
+    writeAutoApprovalNotifications([])
   } catch (error: any) {
     console.warn('[AutoApproval] notification clear failed:', error.message)
     throw error
   }
   return []
+}
+
+function autoApprovalPermissionPersonKey(item: any): string {
+  const applicantId = item?.applicantId ?? item?.employeeId ?? item?.employeeNumber
+  if (applicantId != null && String(applicantId).trim() !== '') {
+    return `id:${String(applicantId).trim()}`
+  }
+
+  const applicantName = String(item?.applicantName || item?.employeeName || '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase()
+  if (applicantName) return `name:${applicantName}`
+
+  return `request:${String(item?.requestId ?? item?.applicationNumber ?? item?.key ?? '')}`
+}
+
+function matchesAutoApprovalPermissionScope(item: any, scope?: AutoApprovalPermissionScope): boolean {
+  if (!scope || (!scope.applicantKey && !scope.itemKey && scope.requestId == null)) return true
+  if (scope.itemKey && String(item?.key || '') === String(scope.itemKey)) return true
+  if (scope.requestId != null && String(item?.requestId) === String(scope.requestId)) return true
+  if (scope.applicantKey && autoApprovalPermissionPersonKey(item) === scope.applicantKey) return true
+  return false
+}
+
+async function approveAutoApprovalNotification(
+  notificationId: string,
+  scope?: AutoApprovalPermissionScope,
+): Promise<any> {
+  const notifications = readAutoApprovalNotifications()
+  const notice = notifications.find((item) => String(item.id) === String(notificationId))
+  if (!notice) {
+    return { success: false, message: '対象の通知が見つかりませんでした。', notifications }
+  }
+  if (notice.kind !== 'overtime_threshold_permission') {
+    return { success: false, message: 'この通知は許可承認の対象ではありません。', notifications }
+  }
+
+  const email = (store.get('FREEE_EMAIL') as string) || ''
+  const password = (store.get('FREEE_PASSWORD') as string) || ''
+  if (!email || !password) {
+    return { success: false, message: '設定画面でfreeeログイン情報を設定し、ログイン確認を完了してください。', notifications }
+  }
+
+  const noticeItems = Array.isArray(notice.items) ? notice.items : []
+  const targetItems = noticeItems.filter((item: any) => matchesAutoApprovalPermissionScope(item, scope))
+
+  if (targetItems.length === 0) {
+    return { success: false, message: '選択した人の承認対象申請が見つかりませんでした。', notifications }
+  }
+
+  const approvalItems = targetItems
+    .map((item: any) => ({
+      requestType: item.requestType || notice.requestType,
+      requestId: Number(item.requestId),
+    }))
+    .filter((item: any) => item.requestType && Number.isInteger(item.requestId))
+
+  if (approvalItems.length === 0) {
+    return { success: false, message: '承認対象の申請がありません。', notifications }
+  }
+
+  const bulkResult = await approveBulkViaBrowser({
+    email,
+    password,
+    items: approvalItems,
+    action: 'approve',
+    headless: RPA_HEADLESS,
+  })
+  const failedItems = bulkResult.results
+    .filter((result) => !result.success)
+    .map((result) => ({ requestType: result.requestType as any, requestId: result.requestId }))
+
+  let fallbackResults: typeof bulkResult.results = []
+  if (failedItems.length > 0) {
+    const fallback = await approveBatchViaBrowser({
+      email,
+      password,
+      items: failedItems,
+      action: 'approve',
+      headless: RPA_HEADLESS,
+    })
+    fallbackResults = fallback.results
+  }
+
+  const finalById = new Map<number, (typeof bulkResult.results)[number]>()
+  for (const result of bulkResult.results) finalById.set(result.requestId, result)
+  for (const result of fallbackResults) {
+    if (result.success) finalById.set(result.requestId, result)
+  }
+  const finalResults = Array.from(finalById.values())
+  const succeededIds = new Set(finalResults.filter((result) => result.success).map((result) => String(result.requestId)))
+  const failed = finalResults.filter((result) => !result.success)
+  const succeededItems = targetItems.filter((item: any) => succeededIds.has(String(item.requestId)))
+  const remainingItems = noticeItems.filter((item: any) => !succeededIds.has(String(item.requestId)))
+
+  let nextNotifications = notifications.filter((item) => String(item.id) !== String(notificationId))
+  if (remainingItems.length > 0) {
+    nextNotifications.push({ ...notice, items: remainingItems })
+  }
+  if (succeededItems.length > 0) {
+    nextNotifications.push({
+      id: `${Date.now()}-${notice.requestType || 'auto'}-approved-by-permission`,
+      createdAt: new Date().toISOString(),
+      kind: 'auto_approval_completed',
+      requestType: notice.requestType,
+      requestTypeLabel: notice.requestTypeLabel,
+      title: `${notice.requestTypeLabel || '申請'}の自動承認が完了しました`,
+      message: `${succeededItems.length}件を承認しました。`,
+      items: succeededItems,
+    })
+  }
+  nextNotifications = writeAutoApprovalNotifications(nextNotifications)
+
+  return {
+    success: failed.length === 0,
+    total: finalResults.length,
+    succeeded: succeededItems.length,
+    failed: failed.length,
+    results: finalResults,
+    notifications: nextNotifications,
+    message: failed.length === 0
+      ? `${succeededItems.length}件を承認しました。`
+      : `承認に失敗した申請があります。`,
+  }
 }
 
 import icon from '../../resources/icon.png?asset'
@@ -344,10 +582,10 @@ let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 900,
-    height: 800,
-    minWidth: 550,
-    minHeight: 600,
+    width: 1180,
+    height: 820,
+    minWidth: 760,
+    minHeight: 640,
     resizable: true,
     show: false,
     autoHideMenuBar: true,
@@ -410,6 +648,10 @@ app.whenReady().then(() => {
     .then(token => getUserInfo(token))
     .catch(() => { /* トークン未設定またはリフレッシュ不可の場合は無視 */ })
 
+  migrateExistingAutoApprovalTasks().catch((error) => {
+    console.warn('[AutoApproval] startup migration failed:', error?.message || error)
+  })
+
   ipcMain.on('ping', () => console.log('pong'))
   ipcMain.handle('app-version', () => app.getVersion())
 
@@ -454,6 +696,10 @@ app.whenReady().then(() => {
     return clearAutoApprovalNotifications()
   })
 
+  ipcMain.handle('auto-approval-notification-approve', async (_, notificationId: string, scope?: AutoApprovalPermissionScope) => {
+    return await approveAutoApprovalNotification(notificationId, scope)
+  })
+
   // ─── ユーザー情報取得（フロントエンド共通） ─────────────────────
   ipcMain.handle('api-get-user-info', async () => {
     const token = await tokenManager.getValidAccessToken()
@@ -461,6 +707,167 @@ app.whenReady().then(() => {
   })
 
   // ─── Settings Store IPC ───────────────────────────────────────
+  ipcMain.handle('api-fetch-manager-overtime-summaries', async (_, options?: { year?: number; month?: number; thresholdMins?: number }) => {
+    const token = await tokenManager.getValidAccessToken()
+    const userInfo = await getUserInfo(token)
+    const year = Number(options?.year) || new Date().getFullYear()
+    const month = Number(options?.month) || (new Date().getMonth() + 1)
+    const thresholdMins = Number(options?.thresholdMins) || 30 * 60
+    const manager = isManagerRole(userInfo.role)
+
+    if (!manager) {
+      return {
+        ok: true,
+        manager: false,
+        canViewOthers: false,
+        userInfo,
+        year,
+        month,
+        thresholdMins,
+        items: [],
+        message: 'Manager role is required to view other employees.',
+      }
+    }
+
+    const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+    let employees: any[] = []
+    try {
+      employees = await fetchEmployeesForManager(headers, userInfo.companyId, year, month)
+    } catch (error: any) {
+      const detail = summarizeAxiosError(error)
+      const email = ((store.get('FREEE_EMAIL') as string) || '').trim()
+      const password = (store.get('FREEE_PASSWORD') as string) || ''
+      if (email && password) {
+        try {
+          const webResult = await fetchManagerOvertimeSummariesViaBrowser({
+            email,
+            password,
+            year,
+            month,
+            thresholdMins,
+            headless: true,
+          })
+          return {
+            ok: true,
+            manager: true,
+            canViewOthers: webResult.items.some((item: any) => item.employeeId !== userInfo.employeeId),
+            userInfo,
+            year,
+            month,
+            thresholdMins,
+            source: webResult.source,
+            sourceUrl: webResult.url,
+            apiError: {
+              ...detail,
+              message: `Employee list API failed: ${detail.message}`,
+            },
+            items: webResult.items,
+            message: 'freee APIで他の人の勤怠一覧を取得できなかったため、freee Web画面から取得しました。',
+          }
+        } catch (webError: any) {
+          const webMessage = webError?.message || 'freee Web UI fallback failed'
+          return {
+            ok: false,
+            manager: true,
+            canViewOthers: false,
+            userInfo,
+            year,
+            month,
+            thresholdMins,
+            items: [],
+            error: {
+              ...detail,
+              message: `Employee list API failed: ${detail.message} / Web UI fallback failed: ${webMessage}`,
+            },
+          }
+        }
+      }
+      return {
+        ok: false,
+        manager: true,
+        canViewOthers: false,
+        userInfo,
+        year,
+        month,
+        thresholdMins,
+        items: [],
+        error: {
+          ...detail,
+          message: `Employee list API failed: ${detail.message}`,
+        },
+      }
+    }
+
+    const items = await Promise.all(employees.map(async (employee) => {
+      const employeeId = Number(employee.id ?? employee.employee_id)
+      if (!employeeId) {
+        return {
+          employeeId: 0,
+          employeeNumber: employee.num || '',
+          employeeName: employeeDisplayName(employee),
+          canReadSummary: false,
+          error: 'Employee ID was not found.',
+        }
+      }
+
+      try {
+        const res = await axios.get(
+          `https://api.freee.co.jp/hr/api/v1/employees/${employeeId}/work_record_summaries/${year}/${month}`,
+          {
+            headers,
+            params: { company_id: userInfo.companyId },
+          },
+        )
+        const summary = res.data.work_record_summary || res.data.employee_work_record_summary || res.data || {}
+        const legalOvertimeMins = minutesValue(summary.total_excess_statutory_work_mins)
+        const overtimeMins = minutesValue(summary.total_overtime_except_normal_work_mins)
+        const totalOvertimeMins = legalOvertimeMins + overtimeMins
+        return {
+          employeeId,
+          employeeNumber: employee.num || '',
+          employeeName: employeeDisplayName(employee),
+          canReadSummary: true,
+          overThreshold: totalOvertimeMins >= thresholdMins,
+          workDays: minutesValue(summary.work_days),
+          totalWorkMins: minutesValue(summary.total_work_mins),
+          normalWorkMins: minutesValue(summary.total_normal_work_mins),
+          legalOvertimeMins,
+          overtimeMins,
+          totalOvertimeMins,
+          prescribedHolidayWorkMins: minutesValue(summary.total_prescribed_holiday_work_mins),
+          holidayWorkMins: minutesValue(summary.total_holiday_work_mins),
+          latenightWorkMins: minutesValue(summary.total_latenight_work_mins),
+          absenceDays: minutesValue(summary.num_absences),
+          paidHolidays: minutesValue(summary.num_paid_holidays),
+          paidHolidaysLeft: minutesValue(summary.num_paid_holidays_left),
+          latenessEarlyLeavingMins: minutesValue(summary.total_lateness_and_early_leaving_mins),
+        }
+      } catch (error: any) {
+        const detail = summarizeAxiosError(error)
+        return {
+          employeeId,
+          employeeNumber: employee.num || '',
+          employeeName: employeeDisplayName(employee),
+          canReadSummary: false,
+          error: detail.message,
+          status: detail.status,
+        }
+      }
+    }))
+
+    return {
+      ok: true,
+      manager: true,
+      canViewOthers: items.some((item: any) => item.canReadSummary && item.employeeId !== userInfo.employeeId),
+      userInfo,
+      year,
+      month,
+      thresholdMins,
+      source: 'api',
+      items,
+    }
+  })
+
   ipcMain.handle('store-get', (_, key) => store.get(key))
   ipcMain.handle('store-set', (_, key, val) => store.set(key, val))
 

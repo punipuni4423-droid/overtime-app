@@ -44,6 +44,8 @@ const REQUEST_TYPES = {
   }
 };
 
+const OVERTIME_PERMISSION_THRESHOLD_MINS = [30 * 60, 65 * 60];
+
 function parseRequestTypes() {
   const typeIndex = process.argv.indexOf("--type");
   const rawType = typeIndex >= 0 ? process.argv[typeIndex + 1] : "work_time";
@@ -60,6 +62,13 @@ function nowIso() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatMinutes(mins) {
+  const total = Math.max(0, Math.round(Number(mins || 0)));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${h}時間${m > 0 ? ` ${m}分` : ""}`;
 }
 
 function logLine(message, extra = undefined) {
@@ -89,7 +98,7 @@ ${safeTitle}
   const child = spawn("powershell.exe", ["-NoProfile", "-STA", "-EncodedCommand", encoded], {
     detached: true,
     stdio: "ignore",
-    windowsHide: false
+    windowsHide: true
   });
   child.unref();
 }
@@ -127,6 +136,35 @@ function routeMatches(request, typeConfig, allowedRouteIds) {
   const routeId = Number(request.approval_flow_route_id);
   const idOk = allowedRouteIds.includes(routeId);
   return idOk;
+}
+
+function usageTypeLabel(value) {
+  const labels = {
+    full_day: "全休",
+    morning_half: "午前休",
+    afternoon_half: "午後休",
+    full: "全休",
+    morning: "午前休",
+    afternoon: "午後休",
+    hourly: "時間単位"
+  };
+  return value ? labels[value] || String(value) : "";
+}
+
+function holidayTypeLabel(value) {
+  const labels = {
+    paid_holiday: "有給",
+    special_holiday: "特別休暇",
+    compensation_holiday: "代休",
+    substitute_holiday: "振休"
+  };
+  return value ? labels[value] || String(value) : "";
+}
+
+function resolveApplicantName(config, request) {
+  const applicantId = request.applicant_id ?? request.employee_id ?? null;
+  const mapName = applicantId != null ? config.ID_NAME_MAP?.[String(applicantId)] : "";
+  return request.applicant_name || mapName || (applicantId != null ? `ID:${applicantId}` : "");
 }
 
 async function requestJson(url, options = {}) {
@@ -385,6 +423,181 @@ async function approveViaWebBulk(config, typeConfig, candidates) {
   }
 }
 
+function payrollMonthFromTargetDate(targetDate) {
+  const raw = String(targetDate || "");
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const date = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date();
+  if (date.getDate() >= 16) date.setMonth(date.getMonth() + 1);
+  return { year: date.getFullYear(), month: date.getMonth() + 1 };
+}
+
+function overtimeMonthKey(targetDate) {
+  const { year, month } = payrollMonthFromTargetDate(targetDate);
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function normalizePersonName(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function timeTextToMinutes(value) {
+  const match = String(value || "").match(/(-?\d+)\s*:\s*(\d+)/);
+  if (!match) return 0;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+async function fetchMonthlyOvertimeSummariesViaWeb(config, year, month) {
+  const email = String(config.FREEE_EMAIL || "").trim();
+  const password = String(config.FREEE_PASSWORD || "");
+  if (!email || !password) throw new Error("freee Web勤怠一覧の取得にはFREEE_EMAIL/FREEE_PASSWORDが必要です。");
+
+  const { chromium } = await import("playwright-core");
+  const debugMode = process.env.RPA_DEBUG === "1" || process.env.RPA_DEBUG === "true";
+  const savedSession = loadSessionState();
+  const browser = await chromium.launch({
+    channel: "msedge",
+    headless: !debugMode,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+  }).catch(() => chromium.launch({
+    headless: !debugMode,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+  }));
+
+  try {
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      ...(savedSession ? { storageState: savedSession } : {})
+    });
+    const page = await context.newPage();
+    if (!debugMode) {
+      await page.route("**/*", (route) => {
+        if (["image", "media", "font"].includes(route.request().resourceType())) route.abort();
+        else route.continue();
+      });
+    }
+
+    await doLogin(page, context, email, password, savedSession);
+    await saveSessionState(context);
+    await page.goto(`https://p.secure.freee.co.jp/#home/${year}/${month}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 45000
+    }).catch(() => {});
+    await page.waitForFunction(() => Boolean(document.body?.innerText?.trim()), { timeout: 20000 }).catch(() => {});
+    await page.evaluate(() => {
+      const nav = Array.from(document.querySelectorAll("li[data-testid]")).find(
+        (el) => el.getAttribute("data-testid") === "\u30b0\u30ed\u30ca\u30d3_\u52e4\u6020"
+      );
+      const trigger = nav?.querySelector("button, a");
+      trigger?.click();
+    });
+    await page.waitForTimeout(1000);
+
+    const workRecordsHref = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll("a[href]"));
+      const link = links.find((a) => {
+        const href = a.getAttribute("href") || "";
+        return /#work_records\/\d+\/\d+\/\d+/.test(href) && !href.includes("/employees/");
+      });
+      return link?.getAttribute("href") || "";
+    });
+    if (!workRecordsHref) throw new Error("freee Web UIの勤怠情報リンクを検出できませんでした。");
+
+    const targetHref = workRecordsHref.replace(
+      /#work_records\/(\d+)\/\d+\/\d+.*/,
+      `#work_records/$1/${year}/${month}?page=1&per=100&sortBy=num&sortDirection=ASC`
+    );
+    const targetUrl = new URL(targetHref, "https://p.secure.freee.co.jp").toString();
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
+    await page.waitForFunction(() => {
+      const rows = Array.from(document.querySelectorAll("tr"));
+      return rows.some((row) => row.querySelectorAll("td").length >= 10);
+    }, { timeout: 30000 });
+
+    const items = await page.evaluate(() => {
+      const text = (el) => (el?.textContent || "").replace(/\s+/g, " ").trim();
+      const timeToMinutes = (value) => {
+        const match = String(value || "").match(/(-?\d+)\s*:\s*(\d+)/);
+        if (!match) return 0;
+        return Number(match[1]) * 60 + Number(match[2]);
+      };
+      return Array.from(document.querySelectorAll("tr")).map((row) => {
+        const cells = Array.from(row.querySelectorAll("td")).map(text);
+        if (cells.length < 13) return null;
+        const overtimeMins = timeToMinutes(cells[8]);
+        const holidayWorkMins = timeToMinutes(cells[9]);
+        return {
+          employeeName: cells[0] || "",
+          employeeNumber: cells[1] || "",
+          totalOvertimeMins: overtimeMins + holidayWorkMins,
+          overtimeMins,
+          holidayWorkMins
+        };
+      }).filter(Boolean);
+    });
+    return items;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function buildOvertimeThresholdBlocks(config, candidates) {
+  const targetCandidates = candidates.filter((decision) => ["overtime", "work_time"].includes(decision.summary.type));
+  if (targetCandidates.length === 0) return [];
+
+  const byMonth = new Map();
+  for (const decision of targetCandidates) {
+    const key = overtimeMonthKey(decision.summary.targetDate);
+    if (!byMonth.has(key)) byMonth.set(key, []);
+    byMonth.get(key).push(decision);
+  }
+
+  const blocks = [];
+  for (const [key, monthCandidates] of byMonth) {
+    const [yearText, monthText] = key.split("-");
+    let summaries = [];
+    try {
+      summaries = await fetchMonthlyOvertimeSummariesViaWeb(config, Number(yearText), Number(monthText));
+    } catch (error) {
+      logLine("overtime threshold check failed", { month: key, error: error.message });
+      continue;
+    }
+    const summaryMap = new Map();
+    for (const summary of summaries) {
+      summaryMap.set(normalizePersonName(summary.employeeName), summary);
+    }
+    for (const decision of monthCandidates) {
+      const applicantName = decision.summary.applicantName || "";
+      const summary = summaryMap.get(normalizePersonName(applicantName));
+      if (!summary) {
+        logLine("overtime threshold applicant not found", { month: key, applicantName, requestId: decision.summary.id });
+        continue;
+      }
+      const total = Number(summary.totalOvertimeMins || 0);
+      const thresholdMins = [...OVERTIME_PERMISSION_THRESHOLD_MINS]
+        .sort((a, b) => b - a)
+        .find((mins) => total >= mins) || 0;
+      if (thresholdMins > 0) {
+        blocks.push({
+          decision,
+          month: key,
+          totalOvertimeMins: total,
+          thresholdMins,
+          thresholdHours: thresholdMins / 60,
+          overtimeMins: Number(summary.overtimeMins || 0),
+          holidayWorkMins: Number(summary.holidayWorkMins || 0)
+        });
+      }
+    }
+  }
+  return blocks;
+}
+
 async function waitForApprovalCompletion(token, companyId, typeConfig, requestId, currentUserId, attempts = 8, intervalMs = 2000) {
   let refreshed = null;
   let stillCurrentApprover = true;
@@ -415,7 +628,7 @@ function isCurrentApprover(request, currentUserId) {
   return approverIds.includes(myId);
 }
 
-function buildDecision(typeKey, typeConfig, request, currentUserId, allowedRouteIds) {
+function buildDecision(typeKey, typeConfig, request, currentUserId, allowedRouteIds, config) {
   const routeName = request.approval_flow_route_name || "";
   const statusOk = request.status === "in_progress";
   const approverOk = isCurrentApprover(request, currentUserId);
@@ -437,15 +650,21 @@ function buildDecision(typeKey, typeConfig, request, currentUserId, allowedRoute
       applicationNumber: request.application_number,
       status: request.status,
       applicantId: request.applicant_id,
+      applicantName: resolveApplicantName(config, request),
       targetDate: request.target_date,
+      startAt: request.start_at || "",
+      endAt: request.end_at || "",
       issueDate: request.issue_date,
+      comment: request.comment || "",
       routeId: request.approval_flow_route_id,
       routeName,
       expectedRouteIds: allowedRouteIds,
       expectedRouteNames: typeConfig.expectedRouteNames,
       currentStepId: request.current_step_id,
       currentRound: request.current_round ?? 0,
-      passedAutoCheck: request.passed_auto_check
+      passedAutoCheck: request.passed_auto_check,
+      usageType: usageTypeLabel(request.usage_type),
+      holidayType: holidayTypeLabel(request.holiday_type)
     }
   };
 }
@@ -504,6 +723,101 @@ function appendRouteMismatchNotification(typeKey, typeConfig, mismatches) {
   logLine("route mismatch notification queued", { type: typeKey, count: items.length });
 }
 
+function appendApprovalCompletedNotification(typeKey, typeConfig, approvedDecisions) {
+  if (approvedDecisions.length === 0) return;
+  const items = approvedDecisions.map((decision) => {
+    const s = decision.summary;
+    return {
+      key: `approved-${typeKey}-${s.id}-${Date.now()}`,
+      requestType: typeKey,
+      requestTypeLabel: typeConfig.label,
+      applicationNumber: s.applicationNumber,
+      requestId: s.id,
+      applicantId: s.applicantId ?? null,
+      applicantName: s.applicantName || "",
+      targetDate: s.targetDate || "",
+      startAt: s.startAt || "",
+      endAt: s.endAt || "",
+      issueDate: s.issueDate || "",
+      routeId: s.routeId ?? null,
+      routeName: s.routeName || "",
+      comment: s.comment || "",
+      usageType: s.usageType || "",
+      holidayType: s.holidayType || ""
+    };
+  });
+  const current = readNotifications();
+  current.push({
+    id: `${Date.now()}-${typeKey}-approved`,
+    createdAt: nowIso(),
+    kind: "auto_approval_completed",
+    requestType: typeKey,
+    requestTypeLabel: typeConfig.label,
+    title: `${typeConfig.label}の自動承認が完了しました`,
+    message: `${items.length}件を承認しました。`,
+    items
+  });
+  writeNotifications(current);
+  logLine("approval completed notification queued", { type: typeKey, count: items.length });
+}
+
+function appendOvertimeThresholdNotification(typeKey, typeConfig, blocks) {
+  if (blocks.length === 0) return;
+  const thresholdLabel = OVERTIME_PERMISSION_THRESHOLD_MINS
+    .map((mins) => `${mins / 60}時間`)
+    .join("または");
+  const current = readNotifications();
+  const existingKeys = new Set();
+  for (const notification of current) {
+    for (const item of notification.items || []) {
+      if (item.key) existingKeys.add(item.key);
+    }
+  }
+  const items = blocks.map((block) => {
+    const s = block.decision.summary;
+    return {
+      key: `threshold-${typeKey}-${s.id}-${block.thresholdHours}`,
+      requestType: typeKey,
+      requestTypeLabel: typeConfig.label,
+      applicationNumber: s.applicationNumber,
+      requestId: s.id,
+      applicantId: s.applicantId ?? null,
+      applicantName: s.applicantName || "",
+      targetDate: s.targetDate || "",
+      startAt: s.startAt || "",
+      endAt: s.endAt || "",
+      issueDate: s.issueDate || "",
+      routeId: s.routeId ?? null,
+      routeName: s.routeName || "",
+      comment: s.comment || "",
+      currentRound: s.currentRound ?? 0,
+      currentStepId: s.currentStepId ?? 0,
+      usageType: s.usageType || "",
+      holidayType: s.holidayType || "",
+      overtimeMonth: block.month,
+      thresholdHours: block.thresholdHours,
+      thresholdMins: block.thresholdMins,
+      totalOvertimeMins: block.totalOvertimeMins,
+      totalOvertimeText: formatMinutes(block.totalOvertimeMins),
+      overtimeMins: block.overtimeMins,
+      holidayWorkMins: block.holidayWorkMins
+    };
+  }).filter((item) => !existingKeys.has(item.key));
+  if (items.length === 0) return;
+  current.push({
+    id: `${Date.now()}-${typeKey}-overtime-threshold`,
+    createdAt: nowIso(),
+    kind: "overtime_threshold_permission",
+    requestType: typeKey,
+    requestTypeLabel: typeConfig.label,
+    title: `${typeConfig.label}の残業時間確認`,
+    message: `残業時間が${thresholdLabel}を超過しているため、自動承認を保留しました。許可すると承認を実行します。`,
+    items
+  });
+  writeNotifications(current);
+  logLine("overtime threshold notification queued", { type: typeKey, count: items.length });
+}
+
 async function fetchRequestDetails(token, companyId, typeConfig) {
   const list = await freeeGet(token, `/approval_requests/${typeConfig.pathSegment}`, {
     company_id: companyId,
@@ -533,14 +847,31 @@ async function runForType(typeKey, config, token, companyId, currentUserId) {
   });
 
   const requests = await fetchRequestDetails(token, companyId, typeConfig);
-  const decisions = requests.map((request) => buildDecision(typeKey, typeConfig, request, currentUserId, allowedRouteIds));
+  const decisions = requests.map((request) => buildDecision(typeKey, typeConfig, request, currentUserId, allowedRouteIds, config));
   const candidates = decisions.filter((decision) => decision.approve);
   const skipped = decisions.filter((decision) => !decision.approve);
   const routeMismatches = skipped.filter((decision) => decision.routeMismatch);
   appendRouteMismatchNotification(typeKey, typeConfig, routeMismatches);
 
-  for (const decision of candidates) {
+  const overtimeThresholdBlocks = await buildOvertimeThresholdBlocks(config, candidates);
+  appendOvertimeThresholdNotification(typeKey, typeConfig, overtimeThresholdBlocks);
+  const overtimeThresholdBlockedIds = new Set(
+    overtimeThresholdBlocks.map((block) => String(block.decision.summary.id))
+  );
+  const approvalCandidates = candidates.filter(
+    (decision) => !overtimeThresholdBlockedIds.has(String(decision.summary.id))
+  );
+
+  for (const decision of approvalCandidates) {
     logLine("candidate", decision.summary);
+  }
+  for (const block of overtimeThresholdBlocks) {
+    logLine("skipped overtime threshold", {
+      ...block.decision.summary,
+      thresholdHours: block.thresholdHours,
+      totalOvertimeMins: block.totalOvertimeMins,
+      totalOvertimeText: formatMinutes(block.totalOvertimeMins)
+    });
   }
   for (const decision of skipped) {
     logLine("skipped", { ...decision.summary, reasons: decision.reasons });
@@ -548,8 +879,8 @@ async function runForType(typeKey, config, token, companyId, currentUserId) {
 
   const results = [];
   if (!DRY_RUN) {
-    const webAttempts = await approveViaWebBulk(config, typeConfig, candidates);
-    for (const decision of candidates) {
+    const webAttempts = await approveViaWebBulk(config, typeConfig, approvalCandidates);
+    for (const decision of approvalCandidates) {
       const item = decision.summary;
       try {
         const attempt = webAttempts.get(String(item.id));
@@ -570,13 +901,22 @@ async function runForType(typeKey, config, token, companyId, currentUserId) {
   }
 
   const failed = results.filter((result) => !result.success);
+  if (!DRY_RUN) {
+    const approvedIds = new Set(results.filter((result) => result.success).map((result) => String(result.id)));
+    appendApprovalCompletedNotification(
+      typeKey,
+      typeConfig,
+      approvalCandidates.filter((decision) => approvedIds.has(String(decision.summary.id)))
+    );
+  }
   const resultSummary = {
     type: typeKey,
     dryRun: DRY_RUN,
     scanned: decisions.length,
-    candidates: candidates.length,
+    candidates: approvalCandidates.length,
     skipped: skipped.length,
     routeMismatches: routeMismatches.length,
+    overtimeThresholdBlocked: overtimeThresholdBlocks.length,
     approved: results.filter((result) => result.success).length,
     failed: failed.length
   };

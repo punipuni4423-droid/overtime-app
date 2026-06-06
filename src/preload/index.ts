@@ -55,6 +55,8 @@ const api = {
 
   // ユーザー情報取得（companyId, applicantId, employeeId を API から自動解決）
   getUserInfo: () => ipcRenderer.invoke('api-get-user-info'),
+  fetchManagerOvertimeSummaries: (options?: { year?: number; month?: number; thresholdMins?: number }) =>
+    ipcRenderer.invoke('api-fetch-manager-overtime-summaries', options),
 
   // Web pre-login
   preLogin: () => ipcRenderer.invoke('api-pre-login'),
@@ -96,6 +98,10 @@ const api = {
     ipcRenderer.invoke('auto-approval-set-routes', type, routeIds),
   getAutoApprovalNotifications: () => ipcRenderer.invoke('auto-approval-notifications-get'),
   clearAutoApprovalNotifications: () => ipcRenderer.invoke('auto-approval-notifications-clear'),
+  approveAutoApprovalNotification: (
+    notificationId: string,
+    scope?: { applicantKey?: string; itemKey?: string; requestId?: number },
+  ) => ipcRenderer.invoke('auto-approval-notification-approve', notificationId, scope),
 
   // Auto-update
   onUpdateAvailable: (callback: (version: string) => void) =>

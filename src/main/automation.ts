@@ -48,6 +48,42 @@ export interface AutomationPayload {
   departmentName?: string;
 }
 
+export interface ManagerOvertimeBrowserPayload {
+    email: string;
+    password: string;
+    year: number;
+    month: number;
+    thresholdMins: number;
+    headless?: boolean;
+}
+
+export interface ManagerOvertimeBrowserItem {
+    employeeId: number;
+    employeeNumber: string;
+    employeeName: string;
+    canReadSummary: boolean;
+    overThreshold: boolean;
+    workDays: number;
+    totalWorkMins: number;
+    normalWorkMins: number;
+    legalOvertimeMins: number;
+    overtimeMins: number;
+    totalOvertimeMins: number;
+    prescribedHolidayWorkMins: number;
+    holidayWorkMins: number;
+    latenightWorkMins: number;
+    absenceDays: number;
+    paidHolidays: number;
+    paidHolidaysLeft: number;
+    latenessEarlyLeavingMins: number;
+}
+
+export interface ManagerOvertimeBrowserResult {
+    source: 'web';
+    url: string;
+    items: ManagerOvertimeBrowserItem[];
+}
+
 // セッション保存先（ログイン済みCookieを再利用してログインをスキップ）
 const SESSION_PATH = path.join(os.homedir(), '.overtime-app', 'browser-session.json');
 
@@ -355,6 +391,146 @@ export async function preLoginViaBrowser(email: string, password: string): Promi
         console.warn('[RPA] Pre-login failed (will retry on first submit):', e);
     } finally {
         await browser.close();
+    }
+}
+
+export async function fetchManagerOvertimeSummariesViaBrowser(
+    payload: ManagerOvertimeBrowserPayload
+): Promise<ManagerOvertimeBrowserResult> {
+    console.log('[RPA] Fetching manager overtime summaries from freee web UI...');
+    const savedSession = loadSessionState();
+    const browser = await chromium.launch({
+        channel: 'msedge',
+        headless: payload.headless !== false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    }).catch(() => chromium.launch({
+        channel: 'chrome',
+        headless: payload.headless !== false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    }));
+
+    let context: BrowserContext | null = null;
+    try {
+        context = await browser.newContext({
+            viewport: { width: 1440, height: 1000 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            ...(savedSession ? { storageState: savedSession as any } : {})
+        });
+        const page = await context.newPage();
+        await page.route('**/*', (route) => {
+            const type = route.request().resourceType();
+            if (['image', 'media', 'font'].includes(type)) route.abort();
+            else route.continue();
+        });
+
+        await doLogin(page, context, payload.email, payload.password, savedSession);
+        await page.goto(`https://p.secure.freee.co.jp/#home/${payload.year}/${payload.month}`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 45000
+        }).catch(() => {});
+        await page.waitForFunction(() => Boolean(document.body?.innerText?.trim()), { timeout: 20000 }).catch(() => {});
+
+        await page.evaluate(() => {
+            const nav = Array.from(document.querySelectorAll('li[data-testid]')).find(
+                (el) => el.getAttribute('data-testid') === '\u30b0\u30ed\u30ca\u30d3_\u52e4\u6020'
+            );
+            const trigger = nav?.querySelector('button, a') as HTMLElement | null;
+            trigger?.click();
+        });
+        await page.waitForTimeout(1500);
+
+        const workRecordsHref = await page.evaluate(() => {
+            const links = Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+            const link = links.find((a) => {
+                const href = a.getAttribute('href') || '';
+                return /#work_records\/\d+\/\d+\/\d+/.test(href) && !href.includes('/employees/');
+            });
+            return link?.getAttribute('href') || '';
+        });
+        if (!workRecordsHref) {
+            throw new Error('freee Web UIの勤怠情報リンクを検出できませんでした。');
+        }
+
+        await page.evaluate((href) => {
+            const links = Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+            const link = links.find((a) => a.getAttribute('href') === href);
+            link?.click();
+        }, workRecordsHref);
+        await page.waitForFunction(() => {
+            const rows = Array.from(document.querySelectorAll('tr'));
+            return rows.some((row) => row.querySelectorAll('td').length >= 10);
+        }, { timeout: 30000 });
+
+        const targetHref = workRecordsHref.replace(
+            /#work_records\/(\d+)\/\d+\/\d+.*/,
+            `#work_records/$1/${payload.year}/${payload.month}?page=1&per=100&sortBy=num&sortDirection=ASC`
+        );
+        const targetUrl = new URL(targetHref, 'https://p.secure.freee.co.jp').toString();
+        if (page.url() !== targetUrl) {
+            await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+            await page.waitForTimeout(3000);
+            await page.waitForFunction(() => {
+                const rows = Array.from(document.querySelectorAll('tr'));
+                return rows.some((row) => row.querySelectorAll('td').length >= 10);
+            }, { timeout: 30000 });
+        }
+
+        const items = await page.evaluate((thresholdMins) => {
+            const timeToMinutes = (value: string): number => {
+                const match = String(value || '').match(/(-?\d+)\s*:\s*(\d+)/);
+                if (!match) return 0;
+                return Number(match[1]) * 60 + Number(match[2]);
+            };
+            const daysToNumber = (value: string): number => {
+                const match = String(value || '').match(/-?\d+(?:\.\d+)?/);
+                return match ? Number(match[0]) : 0;
+            };
+            const text = (el: Element | null | undefined): string =>
+                (el?.textContent || '').replace(/\s+/g, ' ').trim();
+            const rows = Array.from(document.querySelectorAll('tr'));
+            return rows.map((row) => {
+                const cells = Array.from(row.querySelectorAll('td')).map(text);
+                if (cells.length < 13) return null;
+                const href = (Array.from(row.querySelectorAll('a[href]')) as HTMLAnchorElement[])
+                    .map((a) => a.getAttribute('href') || '')
+                    .find((value) => /\/employees\/\d+/.test(value)) || '';
+                const idMatch = href.match(/\/employees\/(\d+)/);
+                const employeeId = idMatch ? Number(idMatch[1]) : 0;
+                const overtimeMins = timeToMinutes(cells[8]);
+                const holidayWorkMins = timeToMinutes(cells[9]);
+                const totalOvertimeMins = overtimeMins + holidayWorkMins;
+                return {
+                    employeeId,
+                    employeeNumber: cells[1] || '',
+                    employeeName: cells[0] || `ID:${employeeId}`,
+                    canReadSummary: true,
+                    overThreshold: totalOvertimeMins >= thresholdMins,
+                    workDays: daysToNumber(cells[5]),
+                    totalWorkMins: timeToMinutes(cells[6]),
+                    normalWorkMins: timeToMinutes(cells[7]),
+                    legalOvertimeMins: 0,
+                    overtimeMins,
+                    totalOvertimeMins,
+                    prescribedHolidayWorkMins: 0,
+                    holidayWorkMins,
+                    latenightWorkMins: timeToMinutes(cells[10]),
+                    absenceDays: daysToNumber(cells[11]),
+                    paidHolidays: 0,
+                    paidHolidaysLeft: 0,
+                    latenessEarlyLeavingMins: timeToMinutes(cells[12])
+                };
+            }).filter((item): item is ManagerOvertimeBrowserItem => Boolean(item && item.employeeName));
+        }, payload.thresholdMins);
+
+        if (items.length === 0) {
+            throw new Error('freee Web UIの勤怠一覧から従業員データを読み取れませんでした。');
+        }
+
+        await saveSessionState(context);
+        return { source: 'web', url: page.url(), items };
+    } finally {
+        await context?.close().catch(() => {});
+        await browser.close().catch(() => {});
     }
 }
 

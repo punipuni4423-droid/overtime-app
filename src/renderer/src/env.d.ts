@@ -30,6 +30,61 @@ interface AutoApprovalStatus {
   allowedRouteIds: number[]
 }
 
+interface UserInfo {
+  companyId: number
+  companyName?: string
+  applicantId: number
+  employeeId: number
+  role?: string
+}
+
+interface ManagerOvertimeSummaryItem {
+  employeeId: number
+  employeeNumber: string
+  employeeName: string
+  canReadSummary: boolean
+  overThreshold?: boolean
+  workDays?: number
+  totalWorkMins?: number
+  normalWorkMins?: number
+  legalOvertimeMins?: number
+  overtimeMins?: number
+  totalOvertimeMins?: number
+  prescribedHolidayWorkMins?: number
+  holidayWorkMins?: number
+  latenightWorkMins?: number
+  absenceDays?: number
+  paidHolidays?: number
+  paidHolidaysLeft?: number
+  latenessEarlyLeavingMins?: number
+  error?: string
+  status?: number | null
+}
+
+interface ManagerOvertimeSummaryResponse {
+  ok: boolean
+  manager: boolean
+  canViewOthers: boolean
+  userInfo: UserInfo
+  year: number
+  month: number
+  thresholdMins: number
+  source?: 'api' | 'web'
+  sourceUrl?: string
+  items: ManagerOvertimeSummaryItem[]
+  message?: string
+  apiError?: {
+    status: number | null
+    message: string
+    data?: unknown
+  }
+  error?: {
+    status: number | null
+    message: string
+    data?: unknown
+  }
+}
+
 interface ApprovalLog {
   userId: number | null
   userName: string
@@ -81,7 +136,12 @@ interface Window {
     nameMapClear: () => Promise<{ success: boolean }>
 
     // ユーザー情報（API自動解決）
-    getUserInfo: () => Promise<{ companyId: number; applicantId: number; employeeId: number }>
+    getUserInfo: () => Promise<UserInfo>
+    fetchManagerOvertimeSummaries: (options?: {
+      year?: number
+      month?: number
+      thresholdMins?: number
+    }) => Promise<ManagerOvertimeSummaryResponse>
 
     // API calls (token auto-managed)
     fetchRoutes: (companyId: number) => Promise<any>
@@ -198,6 +258,10 @@ interface Window {
     ) => Promise<AutoApprovalStatus>
     getAutoApprovalNotifications: () => Promise<any[]>
     clearAutoApprovalNotifications: () => Promise<any[]>
+    approveAutoApprovalNotification: (
+      notificationId: string,
+      scope?: { applicantKey?: string; itemKey?: string; requestId?: number }
+    ) => Promise<any>
 
     // Auto-update
     onUpdateAvailable: (callback: (version: string) => void) => void
