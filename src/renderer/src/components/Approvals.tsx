@@ -77,7 +77,6 @@ const AUTO_APPROVAL_TAB_LABELS: Partial<Record<SubTab, string>> = {
 
 const AUTO_APPROVAL_HOURS: AutoApprovalHour[] = [
   ...Array.from({ length: 16 }, (_, i) => i + 9),
-  '14:12',
 ].sort((a, b) => autoApprovalMinutes(a) - autoApprovalMinutes(b))
 
 function autoApprovalMinutes(value: AutoApprovalHour): number {
