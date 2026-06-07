@@ -578,10 +578,11 @@ async function buildOvertimeThresholdBlocks(config, candidates) {
         logLine("overtime threshold applicant not found", { month: key, applicantName, requestId: decision.summary.id });
         continue;
       }
+      const overtime = Number(summary.overtimeMins || 0);
       const total = Number(summary.totalOvertimeMins || 0);
       const thresholdMins = [...OVERTIME_PERMISSION_THRESHOLD_MINS]
         .sort((a, b) => b - a)
-        .find((mins) => total >= mins) || 0;
+        .find((mins) => overtime >= mins) || 0;
       if (thresholdMins > 0) {
         blocks.push({
           decision,
@@ -589,7 +590,7 @@ async function buildOvertimeThresholdBlocks(config, candidates) {
           totalOvertimeMins: total,
           thresholdMins,
           thresholdHours: thresholdMins / 60,
-          overtimeMins: Number(summary.overtimeMins || 0),
+          overtimeMins: overtime,
           holidayWorkMins: Number(summary.holidayWorkMins || 0)
         });
       }
@@ -800,6 +801,7 @@ function appendOvertimeThresholdNotification(typeKey, typeConfig, blocks) {
       totalOvertimeMins: block.totalOvertimeMins,
       totalOvertimeText: formatMinutes(block.totalOvertimeMins),
       overtimeMins: block.overtimeMins,
+      overtimeText: formatMinutes(block.overtimeMins),
       holidayWorkMins: block.holidayWorkMins
     };
   }).filter((item) => !existingKeys.has(item.key));
@@ -810,8 +812,8 @@ function appendOvertimeThresholdNotification(typeKey, typeConfig, blocks) {
     kind: "overtime_threshold_permission",
     requestType: typeKey,
     requestTypeLabel: typeConfig.label,
-    title: `${typeConfig.label}の残業時間確認`,
-    message: `残業時間が${thresholdLabel}を超過しているため、自動承認を保留しました。許可すると承認を実行します。`,
+    title: `${typeConfig.label}の時間外労働確認`,
+    message: `時間外労働が${thresholdLabel}を超過しているため、自動承認を保留しました。許可すると承認を実行します。`,
     items
   });
   writeNotifications(current);
@@ -869,6 +871,8 @@ async function runForType(typeKey, config, token, companyId, currentUserId) {
     logLine("skipped overtime threshold", {
       ...block.decision.summary,
       thresholdHours: block.thresholdHours,
+      overtimeMins: block.overtimeMins,
+      overtimeText: formatMinutes(block.overtimeMins),
       totalOvertimeMins: block.totalOvertimeMins,
       totalOvertimeText: formatMinutes(block.totalOvertimeMins)
     });

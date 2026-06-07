@@ -827,7 +827,7 @@ app.whenReady().then(() => {
           employeeNumber: employee.num || '',
           employeeName: employeeDisplayName(employee),
           canReadSummary: true,
-          overThreshold: totalOvertimeMins >= thresholdMins,
+          overThreshold: overtimeMins >= thresholdMins,
           workDays: minutesValue(summary.work_days),
           totalWorkMins: minutesValue(summary.total_work_mins),
           normalWorkMins: minutesValue(summary.total_normal_work_mins),

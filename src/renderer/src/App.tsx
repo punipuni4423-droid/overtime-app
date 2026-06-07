@@ -245,7 +245,7 @@ function App() {
                   {notificationTone === 'error'
                     ? '自動承認の確認が必要です'
                     : notificationTone === 'warning'
-                      ? '残業時間の許可が必要です'
+                      ? '時間外労働の許可が必要です'
                       : '自動承認が完了しました'}
                 </div>
                 <div
@@ -260,7 +260,7 @@ function App() {
                   {notificationTone === 'error'
                     ? '承認経路が一致しない申請があります。'
                     : notificationTone === 'warning'
-                      ? '通知対象の残業時間を超過している申請は、許可した場合のみ承認します。'
+                      ? '通知対象の時間外労働を超過している申請は、許可した場合のみ承認します。'
                       : '承認した申請の詳細を確認してください。'}
                 </div>
               </div>
@@ -338,7 +338,8 @@ function App() {
                                       <div>申請日: {formatNoticeDate(item.issueDate)}</div>
                                       <div className="sm:col-span-2">申請経路: {item.routeName || item.routeId || '未設定'}</div>
                                       <div className="sm:col-span-2 font-semibold text-amber-800">
-                                        残業合計: {item.totalOvertimeText || formatNoticeMinutes(item.totalOvertimeMins)}
+                                        時間外労働:{' '}
+                                        {item.overtimeText || formatNoticeMinutes(item.overtimeMins ?? item.totalOvertimeMins)}
                                         {item.thresholdHours ? ` / ${item.thresholdHours}時間超過` : ''}
                                       </div>
                                       <div className="sm:col-span-2">コメント: {item.comment || '—'}</div>

@@ -504,7 +504,7 @@ export async function fetchManagerOvertimeSummariesViaBrowser(
                     employeeNumber: cells[1] || '',
                     employeeName: cells[0] || `ID:${employeeId}`,
                     canReadSummary: true,
-                    overThreshold: totalOvertimeMins >= thresholdMins,
+                    overThreshold: overtimeMins >= thresholdMins,
                     workDays: daysToNumber(cells[5]),
                     totalWorkMins: timeToMinutes(cells[6]),
                     normalWorkMins: timeToMinutes(cells[7]),
