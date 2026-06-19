@@ -18,6 +18,7 @@ const api = {
   submitOvertime: (payload: any) => ipcRenderer.invoke('api-submit-overtime', payload),
   submitOvertimeWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-overtime', payload),
   submitOvertimeWebBatch: (payload: any) => ipcRenderer.invoke('api-web-submit-overtime-batch', payload),
+  submitWorkTime: (payload: any) => ipcRenderer.invoke('api-submit-work-time', payload),
   onOvertimeBatchProgress: (callback: (progress: any) => void) => {
     const listener = (_e: any, progress: any): void => callback(progress)
     ipcRenderer.on('overtime-batch-progress', listener)
@@ -39,10 +40,16 @@ const api = {
   submitPaidLeave: (payload: any) => ipcRenderer.invoke('api-submit-paid-leave', payload),
   submitPaidLeaveWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-paid-leave', payload),
   submitPaidLeaveWebBatch: (payload: any) => ipcRenderer.invoke('api-web-submit-paid-leave-batch', payload),
+  submitHolidayWorkWebBatch: (payload: any) => ipcRenderer.invoke('api-web-submit-holiday-work-batch', payload),
   onPaidLeaveBatchProgress: (callback: (progress: any) => void) => {
     const listener = (_e: any, progress: any): void => callback(progress)
     ipcRenderer.on('paid-leave-batch-progress', listener)
     return () => ipcRenderer.removeListener('paid-leave-batch-progress', listener)
+  },
+  onHolidayWorkBatchProgress: (callback: (progress: any) => void) => {
+    const listener = (_e: any, progress: any): void => callback(progress)
+    ipcRenderer.on('holiday-work-batch-progress', listener)
+    return () => ipcRenderer.removeListener('holiday-work-batch-progress', listener)
   },
   submitMonthlyClose: (payload: any) => ipcRenderer.invoke('api-submit-monthly-close', payload),
   submitMonthlyCloseWeb: (payload: any) => ipcRenderer.invoke('api-web-submit-monthly-close', payload),
@@ -94,8 +101,8 @@ const api = {
     ipcRenderer.invoke('auto-approval-set-enabled', type, enabled),
   setAutoApprovalHours: (type: 'overtime' | 'paid_holiday' | 'work_time', hours: Array<number | string>) =>
     ipcRenderer.invoke('auto-approval-set-hours', type, hours),
-  setAutoApprovalRoutes: (type: 'overtime' | 'paid_holiday' | 'work_time', routeIds: number[]) =>
-    ipcRenderer.invoke('auto-approval-set-routes', type, routeIds),
+  setAutoApprovalRoutes: (type: 'overtime' | 'paid_holiday' | 'work_time', routeIds: number[], enabled?: boolean) =>
+    ipcRenderer.invoke('auto-approval-set-routes', type, routeIds, enabled),
   getAutoApprovalNotifications: () => ipcRenderer.invoke('auto-approval-notifications-get'),
   clearAutoApprovalNotifications: () => ipcRenderer.invoke('auto-approval-notifications-clear'),
   approveAutoApprovalNotification: (

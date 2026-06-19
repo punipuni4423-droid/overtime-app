@@ -3,6 +3,8 @@ import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, ShieldCheck, Users
 
 const NOTICE_THRESHOLD_HOUR_OPTIONS = Array.from({ length: 11 }, (_, index) => 30 + index * 5)
 const DEFAULT_NOTICE_THRESHOLD_HOURS = [30, 65]
+const NOTICE_THRESHOLD_STORE_KEY = 'MANAGER_OVERTIME_NOTICE_THRESHOLD_HOURS'
+const OVER_ONLY_STORE_KEY = 'MANAGER_OVERTIME_OVER_ONLY'
 
 function formatMinutes(value?: number): string {
   const mins = Math.max(0, Math.round(Number(value || 0)))
@@ -25,13 +27,27 @@ function shiftMonth(year: number, month: number, delta: number): { year: number;
   return { year: d.getFullYear(), month: d.getMonth() + 1 }
 }
 
+function getInitialOvertimeMonth(today: Date): { year: number; month: number } {
+  const current = { year: today.getFullYear(), month: today.getMonth() + 1 }
+  return today.getDate() >= 19 ? shiftMonth(current.year, current.month, 1) : current
+}
+
+function noticeOvertimeMinutesOf(item: ManagerOvertimeSummaryItem): number {
+  return Number(
+    item.totalOvertimeMins
+      ?? Number(item.overtimeMins || 0)
+        + Number(item.holidayWorkMins || 0)
+        + Number(item.latenightWorkMins || 0),
+  )
+}
+
 export function ManagerOvertime() {
-  const now = new Date()
-  const initialMonth = shiftMonth(now.getFullYear(), now.getMonth() + 1, -1)
+  const initialMonth = getInitialOvertimeMonth(new Date())
   const [year, setYear] = useState(initialMonth.year)
   const [month, setMonth] = useState(initialMonth.month)
   const [noticeThresholdHours, setNoticeThresholdHours] = useState<number[]>(DEFAULT_NOTICE_THRESHOLD_HOURS)
   const [overOnly, setOverOnly] = useState(true)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ManagerOvertimeSummaryResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -39,8 +55,11 @@ export function ManagerOvertime() {
     () => [...noticeThresholdHours].sort((a, b) => a - b),
     [noticeThresholdHours],
   )
-  const minNoticeThresholdMins = Math.min(...selectedNoticeThresholdHours) * 60
-  const noticeThresholdLabel = selectedNoticeThresholdHours.map((hour) => `${hour}時間`).join(' / ')
+  const hasNoticeThresholds = selectedNoticeThresholdHours.length > 0
+  const minNoticeThresholdMins = hasNoticeThresholds ? Math.min(...selectedNoticeThresholdHours) * 60 : undefined
+  const noticeThresholdLabel = hasNoticeThresholds
+    ? selectedNoticeThresholdHours.map((hour) => `${hour}時間`).join(' / ')
+    : '未選択（全員表示）'
 
   const load = async (): Promise<void> => {
     setLoading(true)
@@ -60,23 +79,64 @@ export function ManagerOvertime() {
   }
 
   useEffect(() => {
+    let cancelled = false
+    const loadSettings = async (): Promise<void> => {
+      try {
+        const [storedHours, storedOverOnly] = await Promise.all([
+          window.api.storeGet(NOTICE_THRESHOLD_STORE_KEY),
+          window.api.storeGet(OVER_ONLY_STORE_KEY),
+        ])
+        if (cancelled) return
+        if (Array.isArray(storedHours)) {
+          const normalized = storedHours
+            .map((value) => Number(value))
+            .filter((value) => NOTICE_THRESHOLD_HOUR_OPTIONS.includes(value))
+            .sort((a, b) => a - b)
+          setNoticeThresholdHours(normalized)
+        }
+        if (typeof storedOverOnly === 'boolean') setOverOnly(storedOverOnly)
+      } finally {
+        if (!cancelled) setSettingsLoaded(true)
+      }
+    }
+    loadSettings()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    window.api.storeSet(NOTICE_THRESHOLD_STORE_KEY, noticeThresholdHours).catch(() => {})
+  }, [noticeThresholdHours, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    window.api.storeSet(OVER_ONLY_STORE_KEY, overOnly).catch(() => {})
+  }, [overOnly, settingsLoaded])
+
+  useEffect(() => {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [year, month, minNoticeThresholdMins])
+  }, [year, month])
+
+  useEffect(() => {
+    if (!hasNoticeThresholds && overOnly) setOverOnly(false)
+  }, [hasNoticeThresholds, overOnly])
 
   const readableItems = data?.items.filter((item) => item.canReadSummary) || []
-  const overtimeMinutesOf = (item: ManagerOvertimeSummaryItem): number => Number(item.overtimeMins || 0)
   const hitNoticeThresholds = (item: ManagerOvertimeSummaryItem): number[] => {
-    const overtime = overtimeMinutesOf(item)
+    if (!hasNoticeThresholds) return []
+    const overtime = noticeOvertimeMinutesOf(item)
     return selectedNoticeThresholdHours.filter((hour) => overtime >= hour * 60)
   }
   const visibleItems = useMemo(() => {
-    const items = [...readableItems].sort((a, b) => overtimeMinutesOf(b) - overtimeMinutesOf(a))
-    return overOnly ? items.filter((item) => hitNoticeThresholds(item).length > 0) : items
-  }, [readableItems, overOnly, selectedNoticeThresholdHours])
+    const items = [...readableItems].sort((a, b) => noticeOvertimeMinutesOf(b) - noticeOvertimeMinutesOf(a))
+    return overOnly && hasNoticeThresholds ? items.filter((item) => hitNoticeThresholds(item).length > 0) : items
+  }, [readableItems, overOnly, selectedNoticeThresholdHours, hasNoticeThresholds])
   const unreadableCount = data?.items.filter((item) => !item.canReadSummary).length || 0
   const overCount = readableItems.filter((item) => hitNoticeThresholds(item).length > 0).length
-  const maxOvertime = readableItems.reduce((max, item) => Math.max(max, overtimeMinutesOf(item)), 0)
+  const maxOvertime = readableItems.reduce((max, item) => Math.max(max, noticeOvertimeMinutesOf(item)), 0)
 
   const moveMonth = (delta: number): void => {
     const next = shiftMonth(year, month, delta)
@@ -87,7 +147,7 @@ export function ManagerOvertime() {
   const toggleNoticeThresholdHour = (hour: number): void => {
     setNoticeThresholdHours((prev) => {
       if (prev.includes(hour)) {
-        return prev.length > 1 ? prev.filter((value) => value !== hour) : prev
+        return prev.filter((value) => value !== hour)
       }
       return [...prev, hour].sort((a, b) => a - b)
     })
@@ -142,7 +202,7 @@ export function ManagerOvertime() {
             </div>
 
             <div className="flex min-h-10 min-w-[360px] flex-1 flex-wrap items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700">
-              <span className="shrink-0 font-semibold text-gray-700">通知する時間外労働</span>
+              <span className="shrink-0 font-semibold text-gray-700">通知する残業合計</span>
             {NOTICE_THRESHOLD_HOUR_OPTIONS.map((hour) => {
               const checked = noticeThresholdHours.includes(hour)
               return (
@@ -167,17 +227,32 @@ export function ManagerOvertime() {
               <span className="shrink-0 text-xs text-gray-400">選択中: {noticeThresholdLabel}</span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setOverOnly((v) => !v)}
-              className={`h-10 shrink-0 rounded-md border px-4 text-sm font-semibold transition-colors ${
-                overOnly
-                  ? 'border-[#007B7E] bg-[#e9f7f7] text-[#007B7E]'
-                  : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              通知対象のみ
-            </button>
+            <div className="inline-flex h-10 shrink-0 overflow-hidden rounded-md border border-gray-300 bg-white text-sm font-semibold">
+              <button
+                type="button"
+                onClick={() => setOverOnly(false)}
+                className={`px-4 transition-colors ${
+                  !overOnly
+                    ? 'bg-[#007B7E] text-white'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                全員表示
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverOnly(true)}
+                disabled={!hasNoticeThresholds}
+                title={!hasNoticeThresholds ? '通知時間を選択すると通知対象のみ表示できます' : '通知対象のみ表示'}
+                className={`border-l border-gray-300 px-4 transition-colors disabled:cursor-not-allowed disabled:text-gray-300 ${
+                  overOnly && hasNoticeThresholds
+                    ? 'bg-[#e9f7f7] text-[#007B7E]'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                通知対象のみ
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -226,7 +301,7 @@ export function ManagerOvertime() {
                 <div className="mt-1 text-xl font-bold text-red-700">{overCount}人</div>
               </div>
               <div className="bg-white border border-gray-200 rounded-md p-3">
-                <div className="text-xs text-gray-500">最大時間外労働</div>
+                <div className="text-xs text-gray-500">最大残業合計</div>
                 <div className="mt-1 text-xl font-bold text-gray-900">{formatMinutes(maxOvertime)}</div>
               </div>
               <div className="bg-white border border-gray-200 rounded-md p-3">
@@ -237,7 +312,7 @@ export function ManagerOvertime() {
 
             <div className="bg-white border border-gray-200 rounded-md overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="min-w-[1180px] w-full text-sm">
+                <table className="min-w-[1280px] w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200 text-xs text-gray-500">
                     <tr>
                       <th className="px-3 py-2 text-left font-semibold">従業員</th>
@@ -248,6 +323,7 @@ export function ManagerOvertime() {
                       <th className="px-3 py-2 text-right font-semibold">時間外労働</th>
                       <th className="px-3 py-2 text-right font-semibold">法定休日労働</th>
                       <th className="px-3 py-2 text-right font-semibold">深夜労働</th>
+                      <th className="px-3 py-2 text-right font-semibold">残業合計</th>
                       <th className="px-3 py-2 text-right font-semibold">欠勤</th>
                       <th className="px-3 py-2 text-right font-semibold">有休取得</th>
                       <th className="px-3 py-2 text-right font-semibold">有休残</th>
@@ -257,12 +333,12 @@ export function ManagerOvertime() {
                   <tbody className="divide-y divide-gray-100">
                     {loading && visibleItems.length === 0 && (
                       <tr>
-                        <td colSpan={12} className="px-4 py-8 text-center text-gray-500">読み込み中...</td>
+                        <td colSpan={13} className="px-4 py-8 text-center text-gray-500">読み込み中...</td>
                       </tr>
                     )}
                     {!loading && visibleItems.length === 0 && (
                       <tr>
-                        <td colSpan={12} className="px-4 py-8 text-center text-gray-500">
+                        <td colSpan={13} className="px-4 py-8 text-center text-gray-500">
                           {overOnly ? '通知対象の従業員はいません。' : '表示できる勤怠集計がありません。'}
                         </td>
                       </tr>
@@ -280,16 +356,19 @@ export function ManagerOvertime() {
                           <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.totalWorkMins)}</td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.normalWorkMins)}</td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.legalOvertimeMins)}</td>
-                          <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${isNoticeTarget ? 'text-red-700' : 'text-gray-900'}`}>
+                          <td className={`px-3 py-2 text-right whitespace-nowrap ${isNoticeTarget ? 'text-red-700' : 'text-gray-900'}`}>
                             {formatMinutes(item.overtimeMins)}
+                          </td>
+                          <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.holidayWorkMins)}</td>
+                          <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.latenightWorkMins)}</td>
+                          <td className={`px-3 py-2 text-right whitespace-nowrap font-bold ${isNoticeTarget ? 'text-red-700' : 'text-gray-900'}`}>
+                            {formatMinutes(noticeOvertimeMinutesOf(item))}
                             {isNoticeTarget && (
                               <div className="mt-0.5 text-[10px] font-semibold text-red-600">
                                 通知: {hitHours.map((hour) => `${hour}時間`).join(' / ')}
                               </div>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.holidayWorkMins)}</td>
-                          <td className="px-3 py-2 text-right whitespace-nowrap">{formatMinutes(item.latenightWorkMins)}</td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">{formatDays(item.absenceDays)}</td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">{formatDays(item.paidHolidays)}</td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">{formatDays(item.paidHolidaysLeft)}</td>

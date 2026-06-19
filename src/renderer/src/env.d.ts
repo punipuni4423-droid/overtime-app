@@ -92,8 +92,13 @@ interface ApprovalLog {
   updatedAt: string
 }
 
+interface WorkTimeRecord {
+  clockInAt: string
+  clockOutAt: string
+}
+
 interface ApprovalItem {
-  type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+  type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
   requestType: string
   id: number
   requestId: number
@@ -105,6 +110,13 @@ interface ApprovalItem {
   targetDate: string
   startAt: string
   endAt: string
+  clockInAt: string
+  clockOutAt: string
+  workRecords: WorkTimeRecord[]
+  breakRecords: WorkTimeRecord[]
+  clearWorkTime: boolean
+  latenessMins: number | null
+  earlyLeavingMins: number | null
   issueDate: string
   comment: string
   status: string
@@ -148,6 +160,20 @@ interface Window {
     fetchDepartments: (companyId: number) => Promise<any>
     submitOvertime: (payload: any) => Promise<any>
     submitOvertimeWeb: (payload: any) => Promise<any>
+    submitWorkTime: (payload: {
+      companyId: number
+      applicantId: number
+      targetDate: string
+      routeId: number
+      routeName?: string
+      departmentId?: number
+      departmentName?: string
+      comment: string
+      workRecords: WorkTimeRecord[]
+      breakRecords?: WorkTimeRecord[]
+      latenessMins?: number
+      earlyLeavingMins?: number
+    }) => Promise<any>
     submitOvertimeWebBatch: (payload: {
       companyId: number
       items: Array<{ targetDate: string; startAt: string; endAt: string }>
@@ -176,9 +202,28 @@ interface Window {
     onPaidLeaveBatchProgress: (
       callback: (progress: { current: number; total: number; date: string; success: boolean; error?: string }) => void
     ) => () => void
+    submitHolidayWorkWebBatch: (payload: {
+      companyId: number
+      items: Array<{ targetDate: string; startAt: string; endAt: string }>
+      comment: string
+      routeId: number
+      routeName: string
+      departmentId?: number
+      departmentName?: string
+    }) => Promise<{ total: number; succeeded: number; failed: Array<{ date: string; error: string }> }>
+    onHolidayWorkBatchProgress: (
+      callback: (progress: { current: number; total: number; date: string; success: boolean; error?: string }) => void
+    ) => () => void
     cancelRequestWebBatch: (payload: {
-      items: Array<{ requestType: 'overtime' | 'paid_holiday' | 'monthly_attendance'; requestId: number }>
+      items: Array<{
+        requestType: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
+        requestId: number
+        status?: string
+        currentRound?: number | null
+        currentStepId?: number | null
+      }>
       action: 'withdraw' | 'delete'
+      headless?: boolean
     }) => Promise<{ total: number; succeeded: number; failed: Array<{ requestId: number; error: string }> }>
     onCancelBatchProgress: (
       callback: (progress: { current: number; total: number; requestId: number; success: boolean; error?: string }) => void
@@ -200,7 +245,8 @@ interface Window {
 
     // 承認 / 差戻し
     approvalAction: (payload: {
-      type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+      type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
+      requestType?: string
       id: number
       targetRound: number
       targetStepId: number
@@ -208,7 +254,8 @@ interface Window {
     }) => Promise<{ success: boolean; status?: number; data?: unknown; message?: string }>
     approvalBatch: (
       payloads: Array<{
-        type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+        type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
+        requestType?: string
         id: number
         targetRound: number
         targetStepId: number
@@ -254,7 +301,8 @@ interface Window {
     ) => Promise<AutoApprovalStatus>
     setAutoApprovalRoutes: (
       type: 'overtime' | 'paid_holiday' | 'work_time',
-      routeIds: number[]
+      routeIds: number[],
+      enabled?: boolean
     ) => Promise<AutoApprovalStatus>
     getAutoApprovalNotifications: () => Promise<any[]>
     clearAutoApprovalNotifications: () => Promise<any[]>

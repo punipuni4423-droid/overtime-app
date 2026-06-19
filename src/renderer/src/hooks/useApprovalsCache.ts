@@ -1,15 +1,25 @@
 import { useEffect, useState, useCallback } from 'react'
 
 interface MyRequestRaw {
-  type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+  type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
   id: number
   status: string
   targetDate: string
   startAt?: string
   endAt?: string
+  clockInAt?: string
+  clockOutAt?: string
+  workRecords?: WorkTimeRecord[]
+  breakRecords?: WorkTimeRecord[]
+  clearWorkTime?: boolean
+  latenessMins?: number | null
+  earlyLeavingMins?: number | null
   comment?: string
   usageType?: string
   routeName?: string
+  approvalFlowRouteId?: number | null
+  currentStepId?: number | null
+  currentRound?: number | null
   applicationNumber: number | null
 }
 

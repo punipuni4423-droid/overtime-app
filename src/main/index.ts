@@ -7,7 +7,7 @@ import axios from 'axios'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import { TokenManager, TokenAuthRequiredError } from './tokenManager'
-import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, cancelRequestBatchViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser, fetchManagerOvertimeSummariesViaBrowser } from './automation'
+import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, cancelRequestBatchViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser, submitHolidayWorkBatchViaBrowser, fetchManagerOvertimeSummariesViaBrowser } from './automation'
 
 const store = new Store({
   defaults: {
@@ -89,6 +89,150 @@ function employeeDisplayName(employee: any): string {
     || [employee.last_name, employee.first_name].filter(Boolean).join(' ')
     || employee.name
     || `ID:${employee.id ?? employee.employee_id ?? ''}`
+}
+
+function normalizeWorkTimeRecords(records: unknown): Array<{ clockInAt: string; clockOutAt: string }> {
+  if (!Array.isArray(records)) return []
+  return records
+    .map((record: any) => ({
+      clockInAt: String(record?.clock_in_at ?? record?.clockInAt ?? ''),
+      clockOutAt: String(record?.clock_out_at ?? record?.clockOutAt ?? ''),
+    }))
+    .filter((record) => record.clockInAt || record.clockOutAt)
+}
+
+type WebApprovalListKind = 'requests' | 'approvals'
+
+const HOLIDAY_WORK_WEB_TYPE = 'ApprovalRequest::HolidayWork'
+const HOLIDAY_WORK_WEB_STATUSES = ['in_progress', 'feedback', 'approved', 'draft']
+
+function getBrowserSessionCookieHeader(): string | null {
+  const sessionPath = join(os.homedir(), '.overtime-app', 'browser-session.json')
+  try {
+    if (!fs.existsSync(sessionPath)) return null
+    const state = JSON.parse(fs.readFileSync(sessionPath, 'utf8'))
+    const cookies = Array.isArray(state?.cookies) ? state.cookies : []
+    const cookieHeader = cookies
+      .filter((cookie: any) => String(cookie?.domain || '').includes('secure.freee.co.jp'))
+      .map((cookie: any) => `${cookie.name}=${cookie.value}`)
+      .join('; ')
+    return cookieHeader || null
+  } catch (error) {
+    console.warn('[WEB-APPROVAL] failed to read browser session:', error)
+    return null
+  }
+}
+
+async function fetchWebHolidayWorkApprovalRequests(
+  kind: WebApprovalListKind,
+  statuses = HOLIDAY_WORK_WEB_STATUSES,
+): Promise<any[]> {
+  const cookieHeader = getBrowserSessionCookieHeader()
+  if (!cookieHeader) {
+    console.warn('[WEB-APPROVAL] browser session is missing; holiday work web fallback skipped')
+    return []
+  }
+
+  const url = `https://p.secure.freee.co.jp/api/p/employees/approval_requests/${kind}`
+  const headers = {
+    Accept: 'application/json, text/plain, */*',
+    Cookie: cookieHeader,
+    Referer: 'https://p.secure.freee.co.jp/approval_requests',
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  }
+  const byId = new Map<number, any>()
+
+  for (const status of statuses) {
+    try {
+      const res = await axios.get(url, {
+        headers,
+        params: {
+          page: 1,
+          per: 100,
+          'q[status_eq]': status,
+          'q[type_eq]': HOLIDAY_WORK_WEB_TYPE,
+          'q[include_proxy_applications_eq]': true,
+        },
+        timeout: 15000,
+      })
+      const items: any[] = Array.isArray(res.data?.approval_requests)
+        ? res.data.approval_requests
+        : []
+      console.log(`[WEB-APPROVAL] ${kind} holiday_work status=${status}: ${items.length}`)
+      for (const item of items) {
+        const id = Number(item?.id)
+        if (!Number.isFinite(id)) continue
+        let enriched = item
+        if (!hasWebApprovalRouteInfo(item)) {
+          for (const detailUrl of [`${url}/${id}`, `https://p.secure.freee.co.jp/api/p/employees/approval_requests/${id}`]) {
+            try {
+              const detailRes = await axios.get(detailUrl, { headers, timeout: 5000 })
+              const detail = detailRes.data?.approval_request || detailRes.data
+              if (detail && typeof detail === 'object') {
+                enriched = { ...item, ...detail }
+                break
+              }
+            } catch {
+              // Detail endpoints differ by account/tenant. Keep the list item if detail is unavailable.
+            }
+          }
+        }
+        byId.set(id, enriched)
+      }
+    } catch (error: any) {
+      console.warn(
+        `[WEB-APPROVAL] ${kind} holiday_work status=${status} failed:`,
+        error.response?.status,
+        error.message,
+      )
+    }
+  }
+
+  return Array.from(byId.values())
+}
+
+function dateOnly(value: unknown): string {
+  if (!value) return ''
+  const match = String(value).match(/^\d{4}-\d{2}-\d{2}/)
+  return match ? match[0] : ''
+}
+
+function timeOnly(value: unknown): string {
+  if (!value) return ''
+  const raw = String(value)
+  const match = raw.match(/T(\d{2}:\d{2})/) || raw.match(/(\d{1,2}:\d{2})/)
+  return match ? match[1] : ''
+}
+
+function resolveWebApprovalRoute(raw: any, routeMap: Record<string, string> = {}): { id: number | null; name: string } {
+  const routeIdRaw =
+    raw?.approval_flow_route_id ??
+    raw?.approval_flow_route?.id ??
+    raw?.approval_flow?.approval_flow_route?.id ??
+    raw?.approval_flow?.route_id ??
+    raw?.approval_flow?.approval_flow_route_id ??
+    raw?.route_id ??
+    raw?.route?.id ??
+    null
+  const routeIdNumber = Number(routeIdRaw)
+  const routeId = Number.isFinite(routeIdNumber) ? routeIdNumber : null
+  const routeName =
+    raw?.approval_flow_route_name ||
+    raw?.approval_flow_route?.name ||
+    raw?.approval_flow?.approval_flow_route?.name ||
+    raw?.approval_flow?.route_name ||
+    raw?.approval_flow?.approval_flow_route_name ||
+    raw?.route_name ||
+    raw?.route?.name ||
+    (routeId !== null ? routeMap[String(routeId)] || '' : '')
+
+  return { id: routeId, name: routeName ? String(routeName) : '' }
+}
+
+function hasWebApprovalRouteInfo(raw: any): boolean {
+  const route = resolveWebApprovalRoute(raw)
+  return Boolean(route.name)
 }
 
 function summarizeAxiosError(error: any): { status: number | null; message: string; data?: unknown } {
@@ -407,6 +551,15 @@ $info = Get-ScheduledTaskInfo -TaskName $TaskName
   }
 }
 
+async function ensureAutoApprovalTask(type: string | undefined, desiredEnabled?: boolean): Promise<any> {
+  const status = await getAutoApprovalStatus(type)
+  const shouldEnable = typeof desiredEnabled === 'boolean' ? desiredEnabled : !!status.enabled
+  if (!status?.exists || (typeof desiredEnabled === 'boolean' && !!status.enabled !== desiredEnabled)) {
+    return await configureAutoApproval(type, { enabled: shouldEnable, hours: status?.hours || [12, 24] })
+  }
+  return status
+}
+
 async function migrateExistingAutoApprovalTasks(): Promise<void> {
   for (const type of Object.keys(AUTO_APPROVAL_TYPES) as AutoApprovalTypeKey[]) {
     try {
@@ -679,13 +832,13 @@ app.whenReady().then(() => {
     return await configureAutoApproval(type as string, { enabled: !!current.enabled, hours })
   })
 
-  ipcMain.handle('auto-approval-set-routes', async (_, type: string | unknown[], routeIds?: unknown[]) => {
+  ipcMain.handle('auto-approval-set-routes', async (_, type: string | unknown[], routeIds?: unknown[], enabled?: boolean) => {
     if (Array.isArray(type) && routeIds === undefined) {
       routeIds = type
       type = 'work_time'
     }
     setAutoApprovalAllowedRouteIds(type as string, routeIds)
-    return await getAutoApprovalStatus(type as string)
+    return await ensureAutoApprovalTask(type as string, enabled)
   })
 
   ipcMain.handle('auto-approval-notifications-get', async () => {
@@ -821,13 +974,15 @@ app.whenReady().then(() => {
         const summary = res.data.work_record_summary || res.data.employee_work_record_summary || res.data || {}
         const legalOvertimeMins = minutesValue(summary.total_excess_statutory_work_mins)
         const overtimeMins = minutesValue(summary.total_overtime_except_normal_work_mins)
-        const totalOvertimeMins = legalOvertimeMins + overtimeMins
+        const holidayWorkMins = minutesValue(summary.total_holiday_work_mins)
+        const latenightWorkMins = minutesValue(summary.total_latenight_work_mins)
+        const totalOvertimeMins = overtimeMins + holidayWorkMins + latenightWorkMins
         return {
           employeeId,
           employeeNumber: employee.num || '',
           employeeName: employeeDisplayName(employee),
           canReadSummary: true,
-          overThreshold: overtimeMins >= thresholdMins,
+          overThreshold: totalOvertimeMins >= thresholdMins,
           workDays: minutesValue(summary.work_days),
           totalWorkMins: minutesValue(summary.total_work_mins),
           normalWorkMins: minutesValue(summary.total_normal_work_mins),
@@ -835,8 +990,8 @@ app.whenReady().then(() => {
           overtimeMins,
           totalOvertimeMins,
           prescribedHolidayWorkMins: minutesValue(summary.total_prescribed_holiday_work_mins),
-          holidayWorkMins: minutesValue(summary.total_holiday_work_mins),
-          latenightWorkMins: minutesValue(summary.total_latenight_work_mins),
+          holidayWorkMins,
+          latenightWorkMins,
           absenceDays: minutesValue(summary.num_absences),
           paidHolidays: minutesValue(summary.num_paid_holidays),
           paidHolidaysLeft: minutesValue(summary.num_paid_holidays_left),
@@ -1020,6 +1175,55 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('api-submit-work-time', async (_, payload) => {
+    const token = await tokenManager.getValidAccessToken()
+    const url = 'https://api.freee.co.jp/hr/api/v1/approval_requests/work_times'
+    const { applicantId: resolvedApplicantId } = await getUserInfo(token)
+    const applicantId = payload.applicantId ?? resolvedApplicantId
+    const workRecords = normalizeWorkTimeRecords(payload.workRecords)
+    const breakRecords = normalizeWorkTimeRecords(payload.breakRecords)
+    if (workRecords.length === 0) {
+      throw new Error('勤務時間を1件以上入力してください。')
+    }
+
+    const apiPayload: any = {
+      company_id: payload.companyId,
+      applicant_id: applicantId,
+      target_date: payload.targetDate,
+      approval_flow_route_id: payload.routeId,
+      comment: payload.comment,
+      clear_work_time: false,
+      work_records: workRecords.map((record) => ({
+        clock_in_at: record.clockInAt,
+        clock_out_at: record.clockOutAt,
+      })),
+    }
+    if (breakRecords.length > 0) {
+      apiPayload.break_records = breakRecords.map((record) => ({
+        clock_in_at: record.clockInAt,
+        clock_out_at: record.clockOutAt,
+      }))
+    }
+    if (payload.departmentId) apiPayload.department_id = payload.departmentId
+    if (Number.isFinite(Number(payload.latenessMins))) apiPayload.lateness_mins = Number(payload.latenessMins)
+    if (Number.isFinite(Number(payload.earlyLeavingMins))) apiPayload.early_leaving_mins = Number(payload.earlyLeavingMins)
+
+    console.log(`[API Call] POST ${url}`)
+    try {
+      const res = await axios.post(url, apiPayload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        }
+      })
+      return res.data
+    } catch (err: any) {
+      console.error(`[API Error] POST ${url} - Status: ${err.response?.status} - ${err.message}`)
+      throw new Error(err.response?.data ? JSON.stringify(err.response.data) : err.message)
+    }
+  })
+
   // ─── 事前ログイン IPC ─────────────────────────────────────────
   ipcMain.handle('api-pre-login', async () => {
     const email = store.get('FREEE_EMAIL') as string
@@ -1083,17 +1287,20 @@ app.whenReady().then(() => {
   type ApprovalActionType =
     | 'overtime'
     | 'paid_holiday'
+    | 'holiday_work'
     | 'monthly_attendance'
     | 'work_time'
   const TYPE_PATH_MAP: Record<ApprovalActionType, string> = {
     overtime: 'overtime_works',
     paid_holiday: 'paid_holidays',
+    holiday_work: 'holiday_works',
     monthly_attendance: 'monthly_attendances',
     work_time: 'work_times'
   }
 
   interface ApprovalActionPayload {
     type: ApprovalActionType
+    requestType?: string
     id: number
     targetRound: number
     targetStepId: number
@@ -1105,7 +1312,7 @@ app.whenReady().then(() => {
   ): Promise<{ success: boolean; status?: number; data?: unknown; message?: string }> {
     const token = await tokenManager.getValidAccessToken()
     const { companyId } = await getUserInfo(token)
-    const path = TYPE_PATH_MAP[payload.type]
+    const path = payload.requestType || TYPE_PATH_MAP[payload.type]
     if (!path) return { success: false, message: `不明な申請種別: ${payload.type}` }
     const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${path}/${payload.id}/actions`
     const body = {
@@ -1182,7 +1389,7 @@ app.whenReady().then(() => {
         }
       }
 
-      const items = payloads.map((p) => ({
+      const items: Array<{ requestType: ApprovalActionType; requestId: number }> = payloads.map((p) => ({
         requestType: p.type,
         requestId: p.id,
       }))
@@ -1345,9 +1552,38 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('api-web-submit-holiday-work-batch', async (event, payload) => {
+    try {
+      const email = await store.get('FREEE_EMAIL')
+      const password = await store.get('FREEE_PASSWORD')
+      if (!email || !password) {
+        throw new Error('Web版申請にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
+      }
+      let employeeId: number | undefined
+      try {
+        const token = await tokenManager.getValidAccessToken()
+        const info = await getUserInfo(token)
+        employeeId = info.employeeId
+      } catch {
+        // direct approval request URL can still work without employeeId.
+      }
+      return await submitHolidayWorkBatchViaBrowser({
+        ...payload,
+        employeeId: payload.employeeId ?? employeeId,
+        email,
+        password,
+        headless: false,
+        onProgress: (p) => event.sender.send('holiday-work-batch-progress', p)
+      })
+    } catch (error: any) {
+      console.error('Holiday Work Batch Web Submit Error:', error)
+      throw error
+    }
+  })
+
   ipcMain.handle('api-fetch-approvals', async (_, options?: { limit?: number; statuses?: string[] }) => {
     const token = await tokenManager.getValidAccessToken()
-    const { companyId, applicantId: myApplicantId } = await getUserInfo(token)
+    const { companyId, applicantId: myApplicantId, employeeId: myEmployeeId } = await getUserInfo(token)
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     const params = { company_id: companyId }
     const perTypeLimit = options?.limit ?? 50
@@ -1429,7 +1665,7 @@ app.whenReady().then(() => {
     }
 
     type ApprovalItem = {
-      type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+      type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
       requestType: string
       id: number
       requestId: number
@@ -1441,6 +1677,13 @@ app.whenReady().then(() => {
       targetDate: string
       startAt: string
       endAt: string
+      clockInAt: string
+      clockOutAt: string
+      workRecords: Array<{ clockInAt: string; clockOutAt: string }>
+      breakRecords: Array<{ clockInAt: string; clockOutAt: string }>
+      clearWorkTime: boolean
+      latenessMins: number | null
+      earlyLeavingMins: number | null
       issueDate: string
       comment: string
       status: string
@@ -1459,21 +1702,26 @@ app.whenReady().then(() => {
       isApprover: boolean
     }
 
-    type FetchTypeKey = 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+    type FetchTypeKey = 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
     const TYPE_PATH: Record<FetchTypeKey, string> = {
       overtime: 'overtime_works',
       paid_holiday: 'paid_holidays',
+      holiday_work: 'holiday_works',
       monthly_attendance: 'monthly_attendances',
       work_time: 'work_times',
     }
     const RESPONSE_KEY: Record<FetchTypeKey, string> = {
       overtime: 'overtime_works',
       paid_holiday: 'paid_holidays',
+      holiday_work: 'holiday_works',
       monthly_attendance: 'monthly_attendances',
       work_time: 'work_times',
     }
+    const TYPE_ENDPOINT_CANDIDATES: Partial<Record<FetchTypeKey, Array<{ path: string; responseKey: string }>>> = {
+      holiday_work: [],
+    }
 
-    const buildItem = (typeKey: FetchTypeKey, raw: any, detail: any | null): ApprovalItem => {
+    const buildItem = (typeKey: FetchTypeKey, raw: any, detail: any | null, pathSegment = TYPE_PATH[typeKey]): ApprovalItem => {
       const item = detail || raw
       const fallback = raw || {}
       const merged = (key: string) => (item && item[key] !== undefined ? item[key] : fallback[key])
@@ -1489,7 +1737,7 @@ app.whenReady().then(() => {
         updatedAt: log.updated_at || '',
       }))
 
-      let targetDate = merged('target_date') || ''
+      let targetDate = merged('target_date') || merged('date') || merged('work_date') || merged('target_on') || ''
       if (typeKey === 'monthly_attendance') {
         if (item?.target_year && item?.target_month) {
           targetDate = `${item.target_year}-${String(item.target_month).padStart(2, '0')}`
@@ -1504,10 +1752,16 @@ app.whenReady().then(() => {
 
       const usageRaw = merged('usage_type')
       const holidayRaw = merged('holiday_type')
+      const workRecords = normalizeWorkTimeRecords(merged('work_records'))
+      const breakRecords = normalizeWorkTimeRecords(merged('break_records'))
+      const clockInAt = merged('clock_in_at') || workRecords[0]?.clockInAt || ''
+      const clockOutAt = merged('clock_out_at') || workRecords[workRecords.length - 1]?.clockOutAt || ''
+      const startAt = typeKey === 'work_time' ? clockInAt : (merged('start_at') || '')
+      const endAt = typeKey === 'work_time' ? clockOutAt : (merged('end_at') || '')
 
       return {
         type: typeKey,
-        requestType: TYPE_PATH[typeKey],
+        requestType: pathSegment,
         id: merged('id'),
         requestId: merged('id'),
         applicationNumber: merged('application_number') ?? null,
@@ -1516,8 +1770,15 @@ app.whenReady().then(() => {
         approverIds,
         approverNames,
         targetDate: targetDate || '',
-        startAt: merged('start_at') || '',
-        endAt: merged('end_at') || '',
+        startAt,
+        endAt,
+        clockInAt,
+        clockOutAt,
+        workRecords,
+        breakRecords,
+        clearWorkTime: Boolean(merged('clear_work_time')),
+        latenessMins: merged('lateness_mins') ?? null,
+        earlyLeavingMins: merged('early_leaving_mins') ?? null,
         issueDate: merged('issue_date') || '',
         comment: merged('comment') || '',
         status: merged('status') || '',
@@ -1564,8 +1825,14 @@ app.whenReady().then(() => {
     }
 
     const fetchListAndDetails = async (typeKey: FetchTypeKey): Promise<ApprovalItem[]> => {
-      const path = TYPE_PATH[typeKey]
-      const respKey = RESPONSE_KEY[typeKey]
+      const candidates = TYPE_ENDPOINT_CANDIDATES[typeKey] || [
+        { path: TYPE_PATH[typeKey], responseKey: RESPONSE_KEY[typeKey] },
+      ]
+      const fetchedGroups: ApprovalItem[][] = []
+
+      for (const candidate of candidates) {
+      const path = candidate.path
+      const respKey = candidate.responseKey
       const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${path}`
       let listItems: any[] = []
       try {
@@ -1577,7 +1844,7 @@ app.whenReady().then(() => {
         console.log(`[API] ${path} list fetched: ${listItems.length}`)
       } catch (e: any) {
         console.warn(`[API] ${path} list fetch failed:`, e.response?.status, e.message)
-        return []
+        continue
       }
 
       // 詳細APIを並列取得（失敗しても一覧データだけで表示できるようにする）
@@ -1601,12 +1868,88 @@ app.whenReady().then(() => {
         }
       })
       const settled = await Promise.all(detailPromises)
-      return settled.map(({ raw, detail }) => buildItem(typeKey, raw, detail))
+      fetchedGroups.push(settled.map(({ raw, detail }) => buildItem(typeKey, raw, detail, path)))
+      }
+      return ([] as ApprovalItem[]).concat(...fetchedGroups)
     }
 
-    const allTypes: FetchTypeKey[] = ['overtime', 'paid_holiday', 'monthly_attendance', 'work_time']
+    const buildWebHolidayWorkItem = (raw: any): ApprovalItem => {
+      const applicantEmployeeId = raw?.applicant_employee_id ?? raw?.employee_id ?? null
+      const approvers: any[] = Array.isArray(raw?.approvers) ? raw.approvers : []
+      const approverIds = approvers
+        .map((approver) => Number(approver?.employee_id ?? approver?.id))
+        .filter((id) => Number.isFinite(id))
+      const approverNames = approvers.map((approver, index) =>
+        approver?.display_name || resolveName(approverIds[index]),
+      )
+      const targetDate = dateOnly(raw?.date ?? raw?.target_date ?? raw?.targetDate)
+      const issueDate = dateOnly(raw?.requested_on ?? raw?.created_at)
+      const startAt = timeOnly(raw?.started_at ?? raw?.start_at)
+      const endAt = timeOnly(raw?.end_at ?? raw?.ended_at)
+      const isSelf = applicantEmployeeId !== null && (
+        String(applicantEmployeeId) === String(myEmployeeId)
+        || String(applicantEmployeeId) === String(myApplicantId)
+      )
+      const isApprover = approverIds.some(
+        (id) => String(id) === String(myEmployeeId) || String(id) === String(myApplicantId),
+      )
+      const route = resolveWebApprovalRoute(raw, routeMap)
+
+      return {
+        type: 'holiday_work',
+        requestType: 'holiday_work',
+        id: Number(raw?.id),
+        requestId: Number(raw?.id),
+        applicationNumber: raw?.request_code ?? raw?.application_number ?? null,
+        applicantId: applicantEmployeeId,
+        applicantName: raw?.applicant?.display_name || resolveName(applicantEmployeeId),
+        approverIds,
+        approverNames,
+        targetDate,
+        startAt,
+        endAt,
+        clockInAt: '',
+        clockOutAt: '',
+        workRecords: [],
+        breakRecords: [],
+        clearWorkTime: false,
+        latenessMins: null,
+        earlyLeavingMins: null,
+        issueDate,
+        comment: raw?.comment || '',
+        status: raw?.status || '',
+        revokeStatus: null,
+        passedAutoCheck: typeof raw?.warned === 'boolean' ? !raw.warned : null,
+        approvalFlowRouteId: route.id,
+        routeName: route.name,
+        currentStepId: raw?.current_step_id ?? approvers[0]?.step_id ?? null,
+        currentRound: null,
+        approvalFlowLogs: [],
+        usageType: '',
+        holidayType: '',
+        values: raw,
+        departmentName: '',
+        isSelf,
+        isApprover,
+      }
+    }
+
+    const allTypes: FetchTypeKey[] = ['overtime', 'paid_holiday', 'holiday_work', 'monthly_attendance', 'work_time']
     const fetched = await Promise.all(allTypes.map((t) => fetchListAndDetails(t)))
     const results: ApprovalItem[] = ([] as ApprovalItem[]).concat(...fetched)
+    const webHolidayWorkItems = await fetchWebHolidayWorkApprovalRequests(
+      'approvals',
+      options?.statuses?.length ? options.statuses : HOLIDAY_WORK_WEB_STATUSES,
+    )
+    const existingKeys = new Set(results.map((item) => `${item.type}:${item.id}`))
+    for (const raw of webHolidayWorkItems) {
+      const item = buildWebHolidayWorkItem(raw)
+      const key = `${item.type}:${item.id}`
+      if (!existingKeys.has(key)) {
+        results.push(item)
+        existingKeys.add(key)
+      }
+    }
 
     // ステータスフィルタ（指定がある場合）
     const filtered = options?.statuses?.length
@@ -1624,7 +1967,7 @@ app.whenReady().then(() => {
   // ─── 自分の申請一覧取得 ────────────────────────────────────────
   ipcMain.handle('api-fetch-my-requests', async (_, options?: { months?: number }) => {
     const token = await tokenManager.getValidAccessToken()
-    const { companyId, applicantId: myApplicantId } = await getUserInfo(token)
+    const { companyId, applicantId: myApplicantId, employeeId: myEmployeeId } = await getUserInfo(token)
     const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     // サーバー側で applicant_id フィルタ + limit=100 で自分の申請のみ取得
     const params = { company_id: companyId, applicant_id: myApplicantId, limit: 100 }
@@ -1734,12 +2077,20 @@ app.whenReady().then(() => {
     }
 
     // 4種別を並列でフェッチ
-    const [overtimeData, paidHolidayData, workTimeData, monthlyData] = await Promise.all([
+    const holidayWorkCandidates: ReadonlyArray<readonly [string, string]> = []
+
+    const [overtimeData, paidHolidayData, holidayWorkGroups, workTimeData, monthlyData] = await Promise.all([
       fetchListAndDetails('overtime_works', 'overtime_works'),
       fetchListAndDetails('paid_holidays', 'paid_holidays'),
+      Promise.all(
+        holidayWorkCandidates.map(([pathSegment, listKey]) =>
+          fetchListAndDetails(pathSegment, listKey),
+        ),
+      ),
       fetchListAndDetails('work_times', 'work_times'),
       fetchListAndDetails('monthly_attendances', 'monthly_attendances'),
     ])
+    const holidayWorkData = ([] as Array<{ raw: any; detail: any | null }>).concat(...holidayWorkGroups)
 
     const results: any[] = []
 
@@ -1755,6 +2106,9 @@ app.whenReady().then(() => {
         endAt: merged(raw, detail, 'end_at') || '',
         comment: merged(raw, detail, 'comment') || '',
         routeName: resolveRouteName(raw, detail),
+        approvalFlowRouteId: merged(raw, detail, 'approval_flow_route_id') ?? null,
+        currentStepId: merged(raw, detail, 'current_step_id') ?? null,
+        currentRound: merged(raw, detail, 'current_round') ?? null,
       })
     }
 
@@ -1770,21 +2124,58 @@ app.whenReady().then(() => {
         usageType: usageRaw ? (usageTypeLabel[usageRaw] || usageRaw) : '',
         comment: merged(raw, detail, 'comment') || '',
         routeName: resolveRouteName(raw, detail),
+        approvalFlowRouteId: merged(raw, detail, 'approval_flow_route_id') ?? null,
+        currentStepId: merged(raw, detail, 'current_step_id') ?? null,
+        currentRound: merged(raw, detail, 'current_round') ?? null,
       })
     }
 
     // 勤務時間修正
+    for (const { raw, detail } of holidayWorkData) {
+      results.push({
+        type: 'holiday_work',
+        id: raw.id,
+        status: merged(raw, detail, 'status') || raw.status,
+        applicationNumber: merged(raw, detail, 'application_number') ?? null,
+        targetDate:
+          merged(raw, detail, 'target_date') ||
+          merged(raw, detail, 'date') ||
+          merged(raw, detail, 'work_date') ||
+          merged(raw, detail, 'target_on') ||
+          '',
+        comment: merged(raw, detail, 'comment') || '',
+        routeName: resolveRouteName(raw, detail),
+        approvalFlowRouteId: merged(raw, detail, 'approval_flow_route_id') ?? null,
+        currentStepId: merged(raw, detail, 'current_step_id') ?? null,
+        currentRound: merged(raw, detail, 'current_round') ?? null,
+      })
+    }
+
     for (const { raw, detail } of workTimeData) {
+      const workRecords = normalizeWorkTimeRecords(merged(raw, detail, 'work_records'))
+      const breakRecords = normalizeWorkTimeRecords(merged(raw, detail, 'break_records'))
+      const clockInAt = merged(raw, detail, 'clock_in_at') || workRecords[0]?.clockInAt || ''
+      const clockOutAt = merged(raw, detail, 'clock_out_at') || workRecords[workRecords.length - 1]?.clockOutAt || ''
       results.push({
         type: 'work_time',
         id: raw.id,
         status: merged(raw, detail, 'status') || raw.status,
         applicationNumber: merged(raw, detail, 'application_number') ?? null,
         targetDate: merged(raw, detail, 'target_date') || '',
-        startAt: merged(raw, detail, 'start_at') || '',
-        endAt: merged(raw, detail, 'end_at') || '',
+        startAt: clockInAt,
+        endAt: clockOutAt,
+        clockInAt,
+        clockOutAt,
+        workRecords,
+        breakRecords,
+        clearWorkTime: Boolean(merged(raw, detail, 'clear_work_time')),
+        latenessMins: merged(raw, detail, 'lateness_mins') ?? null,
+        earlyLeavingMins: merged(raw, detail, 'early_leaving_mins') ?? null,
         comment: merged(raw, detail, 'comment') || '',
         routeName: resolveRouteName(raw, detail),
+        approvalFlowRouteId: merged(raw, detail, 'approval_flow_route_id') ?? null,
+        currentStepId: merged(raw, detail, 'current_step_id') ?? null,
+        currentRound: merged(raw, detail, 'current_round') ?? null,
       })
     }
 
@@ -1807,7 +2198,46 @@ app.whenReady().then(() => {
         targetDate,
         comment: merged(raw, detail, 'comment') || '',
         routeName: resolveRouteName(raw, detail),
+        approvalFlowRouteId: merged(raw, detail, 'approval_flow_route_id') ?? null,
+        currentStepId: merged(raw, detail, 'current_step_id') ?? null,
+        currentRound: merged(raw, detail, 'current_round') ?? null,
       })
+    }
+
+    const webHolidayWorkRequests = await fetchWebHolidayWorkApprovalRequests('requests')
+    const existingMyRequestKeys = new Set(results.map((item) => `${item.type}:${item.id}`))
+    for (const raw of webHolidayWorkRequests) {
+      const id = Number(raw?.id)
+      if (!Number.isFinite(id)) continue
+      const applicantEmployeeId = raw?.applicant_employee_id ?? raw?.employee_id ?? null
+      if (applicantEmployeeId !== null
+        && String(applicantEmployeeId) !== String(myEmployeeId)
+        && String(applicantEmployeeId) !== String(myApplicantId)
+      ) {
+        continue
+      }
+      const status = raw?.status || ''
+      if (excludeStatuses.includes(status)) continue
+      const targetDate = dateOnly(raw?.date ?? raw?.target_date ?? raw?.targetDate)
+      if (!isWithinDateRange({ target_date: targetDate })) continue
+      const key = `holiday_work:${id}`
+      if (existingMyRequestKeys.has(key)) continue
+      const route = resolveWebApprovalRoute(raw, routeMap)
+      results.push({
+        type: 'holiday_work',
+        id,
+        status,
+        applicationNumber: raw?.request_code ?? raw?.application_number ?? null,
+        targetDate,
+        startAt: timeOnly(raw?.started_at ?? raw?.start_at),
+        endAt: timeOnly(raw?.end_at ?? raw?.ended_at),
+        comment: raw?.comment || '',
+        routeName: route.name,
+        approvalFlowRouteId: route.id,
+        currentStepId: raw?.current_step_id ?? null,
+        currentRound: raw?.current_round ?? null,
+      })
+      existingMyRequestKeys.add(key)
     }
 
     return results.sort((a, b) => (b.targetDate || '').localeCompare(a.targetDate || ''))
@@ -1821,7 +2251,7 @@ app.whenReady().then(() => {
       if (!email || !password) {
         throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
       }
-      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'withdraw', headless: RPA_HEADLESS })
+      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'withdraw', headless: typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS })
     } catch (error: any) {
       console.error('Cancel request error:', error)
       throw error
@@ -1836,7 +2266,7 @@ app.whenReady().then(() => {
       if (!email || !password) {
         throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
       }
-      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'delete', headless: RPA_HEADLESS })
+      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'delete', headless: typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS })
     } catch (error: any) {
       console.error('Delete request error:', error)
       throw error
@@ -1851,13 +2281,167 @@ app.whenReady().then(() => {
       if (!email || !password) {
         throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
       }
-      return await cancelRequestBatchViaBrowser({
-        ...payload,
-        email,
-        password,
-        headless: RPA_HEADLESS,
-        onProgress: (p) => event.sender.send('cancel-batch-progress', p)
+      const items = Array.isArray(payload?.items) ? payload.items : []
+      const action = payload?.action === 'withdraw' ? 'withdraw' : 'delete'
+      const headless = typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS
+      const total = items.length
+      if (total === 0) return { total: 0, succeeded: 0, failed: [] }
+
+      const token = await tokenManager.getValidAccessToken()
+      const { companyId } = await getUserInfo(token)
+      const browserFallbackItems: any[] = []
+      const failed: Array<{ requestId: number; error: string }> = []
+      let succeeded = 0
+      let completed = 0
+
+      const emitProgress = (item: any, success: boolean, error?: string): void => {
+        completed += 1
+        event.sender.send('cancel-batch-progress', {
+          current: completed,
+          total,
+          requestId: item.requestId,
+          success,
+          error,
+        })
+      }
+
+      const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+      const typePathFor = (requestType: string): string | undefined =>
+        TYPE_PATH_MAP[requestType as ApprovalActionType]
+      const hasStepInfo = (item: any): boolean =>
+        item.currentRound !== undefined &&
+        item.currentRound !== null &&
+        item.currentStepId !== undefined &&
+        item.currentStepId !== null
+
+      const deleteViaApi = async (item: any): Promise<void> => {
+        const typePath = typePathFor(item.requestType)
+        if (!typePath) throw new Error(`Unsupported request type for API delete: ${item.requestType}`)
+        const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${typePath}/${item.requestId}`
+        let lastError: unknown = null
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await axios.delete(url, {
+              headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+              params: { company_id: companyId }
+            })
+            return
+          } catch (err) {
+            lastError = err
+            if (attempt < 2) await sleep(350 * (attempt + 1))
+          }
+        }
+        const axErr = lastError as { response?: { data?: unknown }; message?: string }
+        const message = axErr?.response?.data
+          ? typeof axErr.response.data === 'string'
+            ? axErr.response.data
+            : JSON.stringify(axErr.response.data)
+          : axErr?.message || 'API delete failed'
+        throw new Error(message)
+      }
+
+      const cancelViaApi = async (item: any): Promise<void> => {
+        const typePath = typePathFor(item.requestType)
+        if (!typePath) throw new Error(`Unsupported request type for API cancel: ${item.requestType}`)
+        if (!hasStepInfo(item)) throw new Error('Missing current approval step info for API cancel')
+        const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${typePath}/${item.requestId}/actions`
+        const body = {
+          company_id: companyId,
+          approval_action: 'cancel',
+          target_round: item.currentRound,
+          target_step_id: item.currentStepId,
+        }
+        try {
+          await axios.post(url, body, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+              'FREEE-VERSION': '2022-02-01'
+            }
+          })
+        } catch (err: unknown) {
+          const axErr = err as { response?: { data?: unknown }; message?: string }
+          const message = axErr.response?.data
+            ? typeof axErr.response.data === 'string'
+              ? axErr.response.data
+              : JSON.stringify(axErr.response.data)
+            : axErr.message || 'API cancel failed'
+          throw new Error(message)
+        }
+      }
+
+      const runLimited = async <T,>(
+        list: T[],
+        limit: number,
+        worker: (item: T) => Promise<void>
+      ): Promise<void> => {
+        let next = 0
+        const workers = Array.from({ length: Math.min(limit, list.length) }, async () => {
+          while (next < list.length) {
+            const current = list[next]
+            next += 1
+            await worker(current)
+          }
+        })
+        await Promise.all(workers)
+      }
+
+      await runLimited(items, 4, async (item: any) => {
+        const status = String(item.status || '').toLowerCase()
+        const supportsApi = !!typePathFor(item.requestType)
+        const canDirectDelete = action === 'delete' && supportsApi && status && status !== 'in_progress'
+        const canCancel = supportsApi && status === 'in_progress' && hasStepInfo(item)
+
+        if (!canDirectDelete && !canCancel) {
+          browserFallbackItems.push(item)
+          return
+        }
+
+        try {
+          if (canCancel) {
+            await cancelViaApi(item)
+            if (action === 'withdraw') {
+              succeeded += 1
+              emitProgress(item, true)
+              return
+            }
+            await deleteViaApi(item)
+            succeeded += 1
+            emitProgress(item, true)
+            return
+          }
+
+          await deleteViaApi(item)
+          succeeded += 1
+          emitProgress(item, true)
+        } catch (err) {
+          console.warn('[API batch cancel/delete] falling back to browser:', item.requestId, err)
+          browserFallbackItems.push(item)
+        }
       })
+
+      if (browserFallbackItems.length > 0) {
+        const completedBeforeBrowser = completed
+        const webResult = await cancelRequestBatchViaBrowser({
+          ...payload,
+          items: browserFallbackItems,
+          action,
+          email,
+          password,
+          headless,
+          onProgress: (p) => event.sender.send('cancel-batch-progress', {
+            ...p,
+            current: completedBeforeBrowser + p.current,
+            total,
+          })
+        })
+        succeeded += webResult.succeeded
+        failed.push(...webResult.failed)
+        completed = completedBeforeBrowser + browserFallbackItems.length
+      }
+
+      return { total, succeeded, failed }
     } catch (error: any) {
       console.error('Cancel batch error:', error)
       throw error
@@ -1870,7 +2454,9 @@ app.whenReady().then(() => {
     const typePathMap: Record<string, string> = {
       overtime: 'overtime_works',
       paid_holiday: 'paid_holidays',
+      holiday_work: 'holiday_works',
       monthly_attendance: 'monthly_attendances',
+      work_time: 'work_times',
     }
     const typePath = typePathMap[requestType]
     if (!typePath) throw new Error(`不明な申請タイプ: ${requestType}`)

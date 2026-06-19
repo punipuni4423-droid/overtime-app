@@ -531,12 +531,14 @@ async function fetchMonthlyOvertimeSummariesViaWeb(config, year, month) {
         if (cells.length < 13) return null;
         const overtimeMins = timeToMinutes(cells[8]);
         const holidayWorkMins = timeToMinutes(cells[9]);
+        const latenightWorkMins = timeToMinutes(cells[10]);
         return {
           employeeName: cells[0] || "",
           employeeNumber: cells[1] || "",
-          totalOvertimeMins: overtimeMins + holidayWorkMins,
+          totalOvertimeMins: overtimeMins + holidayWorkMins + latenightWorkMins,
           overtimeMins,
-          holidayWorkMins
+          holidayWorkMins,
+          latenightWorkMins
         };
       }).filter(Boolean);
     });
@@ -582,7 +584,7 @@ async function buildOvertimeThresholdBlocks(config, candidates) {
       const total = Number(summary.totalOvertimeMins || 0);
       const thresholdMins = [...OVERTIME_PERMISSION_THRESHOLD_MINS]
         .sort((a, b) => b - a)
-        .find((mins) => overtime >= mins) || 0;
+        .find((mins) => total >= mins) || 0;
       if (thresholdMins > 0) {
         blocks.push({
           decision,
@@ -591,7 +593,8 @@ async function buildOvertimeThresholdBlocks(config, candidates) {
           thresholdMins,
           thresholdHours: thresholdMins / 60,
           overtimeMins: overtime,
-          holidayWorkMins: Number(summary.holidayWorkMins || 0)
+          holidayWorkMins: Number(summary.holidayWorkMins || 0),
+          latenightWorkMins: Number(summary.latenightWorkMins || 0)
         });
       }
     }
@@ -802,7 +805,8 @@ function appendOvertimeThresholdNotification(typeKey, typeConfig, blocks) {
       totalOvertimeText: formatMinutes(block.totalOvertimeMins),
       overtimeMins: block.overtimeMins,
       overtimeText: formatMinutes(block.overtimeMins),
-      holidayWorkMins: block.holidayWorkMins
+      holidayWorkMins: block.holidayWorkMins,
+      latenightWorkMins: block.latenightWorkMins
     };
   }).filter((item) => !existingKeys.has(item.key));
   if (items.length === 0) return;
@@ -812,8 +816,8 @@ function appendOvertimeThresholdNotification(typeKey, typeConfig, blocks) {
     kind: "overtime_threshold_permission",
     requestType: typeKey,
     requestTypeLabel: typeConfig.label,
-    title: `${typeConfig.label}の時間外労働確認`,
-    message: `時間外労働が${thresholdLabel}を超過しているため、自動承認を保留しました。許可すると承認を実行します。`,
+    title: `${typeConfig.label}の残業合計確認`,
+    message: `残業合計が${thresholdLabel}を超過しているため、自動承認を保留しました。許可すると承認を実行します。`,
     items
   });
   writeNotifications(current);
@@ -873,6 +877,8 @@ async function runForType(typeKey, config, token, companyId, currentUserId) {
       thresholdHours: block.thresholdHours,
       overtimeMins: block.overtimeMins,
       overtimeText: formatMinutes(block.overtimeMins),
+      holidayWorkMins: block.holidayWorkMins,
+      latenightWorkMins: block.latenightWorkMins,
       totalOvertimeMins: block.totalOvertimeMins,
       totalOvertimeText: formatMinutes(block.totalOvertimeMins)
     });

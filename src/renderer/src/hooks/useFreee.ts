@@ -349,7 +349,44 @@ export function useFreee() {
         }
     }, [])
 
+    const submitHolidayWorkBatch = useCallback(async (
+        companyId: number,
+        dates: string[],
+        startAt: string,
+        endAt: string,
+        routeId: number,
+        comment: string,
+        departmentId?: number,
+        routeName?: string,
+        departmentName?: string
+    ): Promise<BatchResult> => {
+        setLoading(true)
+        setError(null)
+        setBatchProgress({ current: 0, total: dates.length })
+
+        const unsubscribe = window.api.onHolidayWorkBatchProgress((p) => {
+            setBatchProgress({ current: p.current, total: p.total })
+        })
+        try {
+            const result = await window.api.submitHolidayWorkWebBatch({
+                companyId,
+                items: dates.map(d => ({ targetDate: d, startAt, endAt })),
+                comment,
+                routeId,
+                routeName: routeName ?? '',
+                departmentId,
+                departmentName
+            })
+            if (result.failed.length > 0) setError(result.failed[0].error)
+            return result
+        } finally {
+            unsubscribe()
+            setLoading(false)
+            setBatchProgress(null)
+        }
+    }, [])
+
     const clearError = useCallback(() => setError(null), [])
 
-    return { fetchRoutes, fetchDepartments, submitOvertime, submitOvertimeWeb, submitBatch, submitPaidLeaveWeb, submitPaidLeaveBatch, loading, error, clearError, batchProgress }
+    return { fetchRoutes, fetchDepartments, submitOvertime, submitOvertimeWeb, submitBatch, submitPaidLeaveWeb, submitPaidLeaveBatch, submitHolidayWorkBatch, loading, error, clearError, batchProgress }
 }

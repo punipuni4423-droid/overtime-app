@@ -21,15 +21,16 @@ import { NameMapEditModal } from './NameMapEditModal'
 import { useApprovalsCache } from '../hooks/useApprovalsCache'
 import { useLoginVerified, checkLoginGate } from '../hooks/useLoginVerified'
 
-type ApprovalType = 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+type ApprovalType = 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
 type AutoApprovalType = 'overtime' | 'paid_holiday' | 'work_time'
 type AutoApprovalHour = number | string
 
 const TYPE_LABEL: Record<ApprovalType, string> = {
   overtime: '残業',
   paid_holiday: '有給',
+  holiday_work: '休日出勤',
   monthly_attendance: '月次締め',
-  work_time: '勤務修正',
+  work_time: '勤怠修正',
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -53,7 +54,7 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 type StatusFilter = 'in_progress' | 'approved' | 'mine_to_approve' | 'feedback'
-type SubTab = 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+type SubTab = 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
 
 const FILTER_BUTTONS: { key: StatusFilter; label: string }[] = [
   { key: 'in_progress', label: '承認待ち' },
@@ -65,14 +66,15 @@ const FILTER_BUTTONS: { key: StatusFilter; label: string }[] = [
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'overtime', label: '残業申請' },
   { key: 'paid_holiday', label: '有給申請' },
-  { key: 'work_time', label: '勤務時間修正' },
+  { key: 'holiday_work', label: '休日出勤申請' },
+  { key: 'work_time', label: '勤怠時間修正' },
   { key: 'monthly_attendance', label: '月次締め' },
 ]
 
 const AUTO_APPROVAL_TAB_LABELS: Partial<Record<SubTab, string>> = {
   overtime: '残業申請',
   paid_holiday: '有給申請',
-  work_time: '勤務時間修正',
+  work_time: '勤怠時間修正',
 }
 
 const AUTO_APPROVAL_HOURS: AutoApprovalHour[] = [
@@ -130,21 +132,71 @@ function displayName(
   return rawName
 }
 
+function formatWorkTimeValue(value?: string): string {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const match = raw.match(/(\d{1,2}:\d{2})(?::\d{2})?$/) || raw.match(/(\d{1,2}:\d{2})/)
+  return match ? match[1] : raw
+}
+
+function formatWorkTimeRecords(records?: WorkTimeRecord[]): string {
+  return (records || [])
+    .map((record) => {
+      const start = formatWorkTimeValue(record.clockInAt)
+      const end = formatWorkTimeValue(record.clockOutAt)
+      if (start && end) return `${start}–${end}`
+      return start || end
+    })
+    .filter(Boolean)
+    .join(' / ')
+}
+
+function formatTimeRangeText(item: {
+  type?: string
+  startAt?: string
+  endAt?: string
+  clockInAt?: string
+  clockOutAt?: string
+  workRecords?: WorkTimeRecord[]
+  clearWorkTime?: boolean
+}): string {
+  if (item.type === 'work_time') {
+    if (item.clearWorkTime) return '勤怠削除'
+    const recordsText = formatWorkTimeRecords(item.workRecords)
+    if (recordsText) return recordsText
+    const start = formatWorkTimeValue(item.clockInAt || item.startAt)
+    const end = formatWorkTimeValue(item.clockOutAt || item.endAt)
+    if (start && end) return `${start}–${end}`
+    return start || end || '—'
+  }
+  return item.startAt && item.endAt ? `${item.startAt}–${item.endAt}` : '—'
+}
+
 interface EditTarget {
   id: string
   currentName: string
 }
 
 interface MyRequestRaw {
-  type: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time'
+  type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
   id: number
   status: string
   targetDate: string
   startAt?: string
   endAt?: string
+  clockInAt?: string
+  clockOutAt?: string
+  workRecords?: WorkTimeRecord[]
+  breakRecords?: WorkTimeRecord[]
+  clearWorkTime?: boolean
+  latenessMins?: number | null
+  earlyLeavingMins?: number | null
   comment?: string
   usageType?: string
   routeName?: string
+  approvalFlowRouteId?: number | null
+  currentStepId?: number | null
+  currentRound?: number | null
   applicationNumber: number | null
 }
 
@@ -337,6 +389,7 @@ export function Approvals(): React.JSX.Element {
       const status = await window.api.setAutoApprovalRoutes(
         subTab as AutoApprovalType,
         autoApproval.pendingRouteIds,
+        autoApproval.enabled,
       )
       const allowedRouteIds = Array.isArray(status?.allowedRouteIds) ? status.allowedRouteIds : []
       setAutoApproval((prev) => ({
@@ -401,6 +454,7 @@ export function Approvals(): React.JSX.Element {
       return {
         overtime: baseMine.filter((r) => r.type === 'overtime').length,
         paid_holiday: baseMine.filter((r) => r.type === 'paid_holiday').length,
+        holiday_work: baseMine.filter((r) => r.type === 'holiday_work').length,
         work_time: baseMine.filter((r) => r.type === 'work_time').length,
         monthly_attendance: baseMine.filter((r) => r.type === 'monthly_attendance').length,
       }
@@ -413,6 +467,8 @@ export function Approvals(): React.JSX.Element {
     return {
       overtime: cache.approvals.filter((it) => baseFilter(it) && it.type === 'overtime').length,
       paid_holiday: cache.approvals.filter((it) => baseFilter(it) && it.type === 'paid_holiday')
+        .length,
+      holiday_work: cache.approvals.filter((it) => baseFilter(it) && it.type === 'holiday_work')
         .length,
       work_time: cache.approvals.filter((it) => baseFilter(it) && it.type === 'work_time').length,
       monthly_attendance: cache.approvals.filter(
@@ -519,11 +575,13 @@ export function Approvals(): React.JSX.Element {
           (it) =>
             it.type === 'overtime' ||
             it.type === 'paid_holiday' ||
+            it.type === 'holiday_work' ||
             it.type === 'monthly_attendance' ||
             it.type === 'work_time',
         )
         .map((it) => ({
-          type: it.type as 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time',
+          type: it.type as 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time',
+          requestType: it.requestType,
           id: it.id,
           targetRound: it.currentRound ?? 0,
           targetStepId: it.currentStepId ?? 0,
@@ -591,8 +649,11 @@ export function Approvals(): React.JSX.Element {
 
     try {
       const batchItems = itemsToProcess.map((item) => ({
-        requestType: item.type as 'overtime' | 'paid_holiday' | 'monthly_attendance',
+        requestType: item.type as 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time',
         requestId: item.id,
+        status: item.status,
+        currentRound: item.currentRound ?? null,
+        currentStepId: item.currentStepId ?? null,
       }))
 
       const result = await window.api.cancelRequestWebBatch({
@@ -1110,7 +1171,7 @@ function ApprovalsTable({
                 ? formatTargetDate(item.type, item.targetDate)
                 : formatShortDate(item.targetDate)
             const issueText = formatShortDate(item.issueDate)
-            const overtimeText = item.startAt && item.endAt ? `${item.startAt}–${item.endAt}` : '—'
+            const overtimeText = formatTimeRangeText(item)
             const usageText =
               [item.holidayType, item.usageType].filter(Boolean).join(' / ') || '—'
             return (
@@ -1297,7 +1358,7 @@ function MyRequestsTable({
               item.type === 'monthly_attendance'
                 ? formatTargetDate(item.type, item.targetDate)
                 : formatShortDate(item.targetDate)
-            const overtimeText = item.startAt && item.endAt ? `${item.startAt}–${item.endAt}` : '—'
+            const overtimeText = formatTimeRangeText(item)
             const statusLabel = STATUS_LABEL[item.status] || item.status
             const statusClass =
               STATUS_COLOR[item.status] || 'bg-gray-100 text-gray-600 border-gray-300'

@@ -5,3 +5,7 @@ out
 .eslintcache
 *.log*
 .env
+rpa_debug_*.png
+debug_*.png
+test_*.mjs
+cleanup_*.mjs

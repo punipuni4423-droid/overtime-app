@@ -1,73 +1,42 @@
-# 残業ツールを Claude Code で起動するときの指示
+# 残業申請ツール 起動指示
 
-Claude Code（または Cursor のターミナル）でこのプロジェクトを開いたときに、残業申請ツールを起動する手順です。
+このプロジェクトを Codex / Claude Code / Cursor などで開いたときに、残業申請ツールを起動するためのメモです。
 
----
+## 開発モードで起動
 
-## 起動コマンド
-
-このリポジトリのルート（`overtime-app`）で、次のいずれかを実行してください。
-
-### 開発モードで起動（推奨）
-
-```bash
-cd "c:\Users\IoT-136\OneDrive - X1Studio Co., Ltd\あんち\02\overtime-app"
+```powershell
+Set-Location "C:\dev\AI\freee残業申請\overtime-app"
+npm install
 npm run dev
 ```
 
-または、すでに `overtime-app` がカレントディレクトリの場合は:
+Electron + Vite の開発サーバーが起動し、アプリのウィンドウが開きます。
 
-```bash
-npm run dev
-```
+## ビルド済みプレビューで起動
 
-- Electron + Vite の開発サーバーが立ち上がり、残業申請ツールのウィンドウが開きます。
-- ソースを変更するとホットリロードされます。
-
-### ビルド済みのプレビューで起動
-
-```bash
-cd "c:\Users\IoT-136\OneDrive - X1Studio Co., Ltd\あんち\02\overtime-app"
+```powershell
+Set-Location "C:\dev\AI\freee残業申請\overtime-app"
 npm run build
 npm run start
 ```
 
-- 本番ビルド後にアプリを起動します。
+## Windows 用インストーラーを作成
 
-### Windows 用 exe をビルドしてから起動
-
-```bash
-cd "c:\Users\IoT-136\OneDrive - X1Studio Co., Ltd\あんち\02\overtime-app"
+```powershell
+Set-Location "C:\dev\AI\freee残業申請\overtime-app"
 npm run build:win
 ```
 
-- ビルド後、`dist` フォルダ内の exe を直接実行できます。
+生成物は `dist` フォルダに出力されます。
 
----
+## Codex への依頼例
 
-## Claude Code に渡す指示文（コピー用）
-
-プロジェクトを開いたあと、Claude Code に次のように指示すると残業ツールを起動できます。
-
-```
-残業申請ツール（overtime-app）を起動してください。overtime-app フォルダで npm run dev を実行して、開発モードでアプリを立ち上げてください。
+```text
+残業申請ツールを起動してください。overtime-app フォルダで npm run dev を実行して、開発モードでアプリを立ち上げてください。
 ```
 
-または英語で:
+## 注意
 
-```
-Please start the overtime application. Run `npm run dev` in the overtime-app folder to launch the app in development mode.
-```
+2026-06-10 時点で、このローカル作業ツリーは GitHub 最新 `v1.0.12` に同期済みです。
 
----
-
-## 前提条件
-
-- Node.js がインストールされていること
-- 初回または `node_modules` がない場合は、先に `npm install` を実行すること
-
-```bash
-cd "c:\Users\IoT-136\OneDrive - X1Studio Co., Ltd\あんち\02\overtime-app"
-npm install
-npm run dev
-```
+アップデート作業をする前に、必ず `docs/PROJECT_STATUS.md` と `docs/UPDATE_WORKFLOW.md` を確認してください。

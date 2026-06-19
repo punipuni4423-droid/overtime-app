@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw, Clock, CalendarDays, Trash2, RotateCcw, CheckSquare, Square, X } from 'lucide-react'
 
 interface MyRequest {
-    type: 'overtime' | 'paid_holiday' | 'monthly_attendance'
+    type: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time'
     id: number
     status: string
     targetDate: string
@@ -11,15 +11,18 @@ interface MyRequest {
     comment?: string
     usageType?: string
     routeName?: string
+    approvalFlowRouteId?: number | null
+    currentStepId?: number | null
+    currentRound?: number | null
 }
 
-const TYPE_LABEL: Record<MyRequest['type'], string> = {
+const TYPE_LABEL: Partial<Record<MyRequest['type'], string>> = {
     overtime: '残業',
     paid_holiday: '有給',
     monthly_attendance: '月次締め',
 }
 
-const TYPE_COLOR: Record<MyRequest['type'], string> = {
+const TYPE_COLOR: Partial<Record<MyRequest['type'], string>> = {
     overtime: 'bg-orange-100 text-orange-700',
     paid_holiday: 'bg-green-100 text-green-700',
     monthly_attendance: 'bg-blue-100 text-blue-700',
@@ -141,8 +144,11 @@ export function MyRequests() {
 
         try {
             const batchItems = itemsToProcess.map((item) => ({
-                requestType: item.type as 'overtime' | 'paid_holiday' | 'monthly_attendance',
+                requestType: item.type as 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time',
                 requestId: item.id,
+                status: item.status,
+                currentRound: item.currentRound ?? null,
+                currentStepId: item.currentStepId ?? null,
             }))
 
             const result = await window.api.cancelRequestWebBatch({

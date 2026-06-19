@@ -30,13 +30,6 @@ function formatDisplay(dateStr: string): string {
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
-function shiftDate(dateStr: string, days: number): string {
-    const d = strToDate(dateStr)
-    if (!d) return dateStr
-    d.setDate(d.getDate() + days)
-    return dateToStr(d)
-}
-
 function generateDateList(startDate: string, endDate: string, excludeHolidays: boolean): string[] {
     const dates: string[] = []
     const current = new Date(startDate)
@@ -51,11 +44,12 @@ function generateDateList(startDate: string, endDate: string, excludeHolidays: b
 
 import { type LeaveUnit, LEAVE_UNIT_LABELS } from '../../../shared/leaveUnit'
 
-function DateStepper({ value, onChange, startDate, endDate }: {
+function DateStepper({ value, onChange, startDate, endDate, filterDate }: {
     value: string
     onChange: (v: string) => void
     startDate?: Date | null
     endDate?: Date | null
+    filterDate?: (date: Date) => boolean
 }) {
     const [inputText, setInputText] = useState(formatDisplay(value))
     const [calendarOpen, setCalendarOpen] = useState(false)
@@ -65,8 +59,18 @@ function DateStepper({ value, onChange, startDate, endDate }: {
 
     const handleInputBlur = () => {
         const parsed = strToDate(inputText.replace(/\//g, '-'))
-        if (parsed) onChange(dateToStr(parsed))
+        if (parsed && (!filterDate || filterDate(parsed))) onChange(dateToStr(parsed))
         else setInputText(formatDisplay(value))
+    }
+
+    const shiftByAllowedDate = (days: number): string => {
+        const d = strToDate(value)
+        if (!d) return value
+        for (let i = 0; i < 370; i++) {
+            d.setDate(d.getDate() + days)
+            if (!filterDate || filterDate(d)) return dateToStr(d)
+        }
+        return value
     }
 
     const btnBase = "flex items-center justify-center w-9 border-y border-r border-gray-300 bg-white text-gray-400 hover:text-[#007B7E] hover:bg-[#f0fafa] active:bg-[#e0f5f5] transition-colors"
@@ -82,10 +86,10 @@ function DateStepper({ value, onChange, startDate, endDate }: {
                 placeholder="yyyy/mm/dd"
                 className="flex-1 min-w-0 px-3 py-2.5 border border-gray-300 rounded-l-xl text-sm outline-none focus:border-[#007B7E] focus:ring-1 focus:ring-[#007B7E] transition bg-white"
             />
-            <button type="button" onClick={() => onChange(shiftDate(value, -1))} className={btnBase} title="前日">
+            <button type="button" onClick={() => onChange(shiftByAllowedDate(-1))} className={btnBase} title="前日">
                 <ChevronLeft size={14} strokeWidth={2.5} />
             </button>
-            <button type="button" onClick={() => onChange(shiftDate(value, 1))} className={btnBase} title="翌日">
+            <button type="button" onClick={() => onChange(shiftByAllowedDate(1))} className={btnBase} title="翌日">
                 <ChevronRight size={14} strokeWidth={2.5} />
             </button>
             <button
@@ -106,12 +110,51 @@ function DateStepper({ value, onChange, startDate, endDate }: {
                             onChange={(d: Date | null) => { if (d) onChange(dateToStr(d)); setCalendarOpen(false) }}
                             startDate={startDate}
                             endDate={endDate}
+                            filterDate={filterDate}
                             locale="ja"
                             inline
                         />
                     </div>
                 </>
             )}
+        </div>
+    )
+}
+
+function MultiDateCalendar({
+    selectedDates,
+    onChange,
+    filterDate,
+}: {
+    selectedDates: string[]
+    onChange: (dates: string[]) => void
+    filterDate?: (date: Date) => boolean
+}) {
+    const selectedSet = useMemo(() => new Set(selectedDates), [selectedDates])
+    const highlightedDates = useMemo(
+        () => selectedDates.map(strToDate).filter((d): d is Date => Boolean(d)),
+        [selectedDates],
+    )
+
+    const toggleDate = (date: Date | null) => {
+        if (!date) return
+        if (filterDate && !filterDate(date)) return
+        const dateStr = dateToStr(date)
+        if (selectedSet.has(dateStr)) onChange(selectedDates.filter(d => d !== dateStr))
+        else onChange([...selectedDates, dateStr].sort())
+    }
+
+    return (
+        <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+            <DatePicker
+                selected={null}
+                onChange={toggleDate}
+                inline
+                locale="ja"
+                highlightDates={highlightedDates}
+                filterDate={filterDate}
+                dayClassName={(date) => selectedSet.has(dateToStr(date)) ? 'react-datepicker__day--multi-selected' : ''}
+            />
         </div>
     )
 }
@@ -123,10 +166,11 @@ export function PaidLeave() {
     const [companyId, setCompanyId] = useState(0)
 
     const [rangeMode, setRangeMode] = useState(false)
+    const [multiMode, setMultiMode] = useState(false)
     const [date, setDate] = useState('')
     const [dateFrom, setDateFrom] = useState('')
     const [dateTo, setDateTo] = useState('')
-    const [excludeHolidays, setExcludeHolidays] = useState(true)
+    const [selectedDates, setSelectedDates] = useState<string[]>([])
 
     const [leaveUnit, setLeaveUnit] = useState<LeaveUnit>('full_day')
     const [comment, setComment] = useState('')
@@ -150,13 +194,49 @@ export function PaidLeave() {
         if (f && t && t < f) setDateFrom(newTo)
     }
 
+    const handleRangeModeChange = (checked: boolean) => {
+        setRangeMode(checked)
+        if (checked) setMultiMode(false)
+        setBatchResult(null)
+    }
+
+    const handleMultiModeChange = (checked: boolean) => {
+        setMultiMode(checked)
+        if (checked) setRangeMode(false)
+        setBatchResult(null)
+    }
+
+    const removeSelectedDate = (target: string) => {
+        setSelectedDates(prev => prev.filter(d => d !== target))
+        setBatchResult(null)
+    }
+
+    const handleSelectedDatesChange = (dates: string[]) => {
+        setSelectedDates(dates)
+        setBatchResult(null)
+    }
+
     const previewDates = useMemo(() => {
         if (!rangeMode || !dateFrom || !dateTo) return []
-        return generateDateList(dateFrom, dateTo, excludeHolidays)
-    }, [rangeMode, dateFrom, dateTo, excludeHolidays])
+        return generateDateList(dateFrom, dateTo, true)
+    }, [rangeMode, dateFrom, dateTo])
+
+    const targetDates = useMemo(() => {
+        if (rangeMode) return previewDates
+        if (multiMode) return selectedDates
+        return date ? [date] : []
+    }, [rangeMode, multiMode, previewDates, selectedDates, date])
+
+    const multiHolidayDates = useMemo(
+        () => selectedDates.filter(d => isNonBusinessDay(d)),
+        [selectedDates],
+    )
+
+    const isBatchMode = rangeMode || multiMode
 
     const rangeStartDate = useMemo(() => strToDate(dateFrom), [dateFrom])
     const rangeEndDate = useMemo(() => strToDate(dateTo), [dateTo])
+    const isBusinessDate = (d: Date): boolean => !isNonBusinessDay(dateToStr(d))
 
     useEffect(() => {
         const today = new Date()
@@ -210,8 +290,8 @@ export function PaidLeave() {
             const routeName = selectedRoute?.name ?? ''
             const departmentName = deptId ? DEPARTMENTS.find(d => d.id === deptId)?.name : undefined
 
-            if (rangeMode) {
-                const dates = generateDateList(dateFrom, dateTo, excludeHolidays)
+            if (isBatchMode) {
+                const dates = targetDates
                 if (dates.length === 0) return
                 const result = await submitPaidLeaveBatch(companyId, dates, leaveUnit, undefined, undefined, selectedRouteId, comment, deptId, routeName, departmentName)
                 setBatchResult(result)
@@ -230,13 +310,14 @@ export function PaidLeave() {
 
     const isConfigured = companyId && hasToken
     // 単日モード: 土日祝日は申請不可
-    const isSingleDateHoliday = !rangeMode && date && isNonBusinessDay(date)
+    const isSingleDateHoliday = !rangeMode && !multiMode && date && isNonBusinessDay(date)
+    const hasHolidayDateError = Boolean(isSingleDateHoliday || (multiMode && multiHolidayDates.length > 0))
     // コメント必須
     const isCommentEmpty = !comment.trim()
 
     const buttonLabel = () => {
         if (loading && batchProgress) return `申請中...（${batchProgress.current}/${batchProgress.total}）`
-        if (rangeMode && previewDates.length > 0) return `${previewDates.length}件を一括申請`
+        if (isBatchMode && targetDates.length > 0) return `${targetDates.length}件を一括申請`
         return '申請する'
     }
 
@@ -253,21 +334,54 @@ export function PaidLeave() {
                     <div>
                         <div className="flex items-center justify-between mb-2">
                             <label className="text-sm font-semibold text-gray-700">申請対象日</label>
-                            <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                                <input type="checkbox" checked={rangeMode} onChange={e => { setRangeMode(e.target.checked); setBatchResult(null) }} className="w-3.5 h-3.5 rounded accent-[#007B7E]" />
-                                <span className="text-xs text-gray-500 flex items-center gap-1">
-                                    <CalendarRange size={12} />期間で指定
-                                </span>
-                            </label>
+                            <div className="flex items-center gap-3">
+                                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                    <input type="checkbox" checked={rangeMode} onChange={e => handleRangeModeChange(e.target.checked)} className="w-3.5 h-3.5 rounded accent-[#007B7E]" />
+                                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                                        <CalendarRange size={12} />期間で指定
+                                    </span>
+                                </label>
+                                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                    <input type="checkbox" checked={multiMode} onChange={e => handleMultiModeChange(e.target.checked)} className="w-3.5 h-3.5 rounded accent-[#007B7E]" />
+                                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                                        <Calendar size={12} />複数日指定
+                                    </span>
+                                </label>
+                            </div>
                         </div>
 
-                        {!rangeMode ? (
+                        {!rangeMode && !multiMode ? (
                             <>
-                                <DateStepper value={date} onChange={setDate} />
+                                <DateStepper value={date} onChange={setDate} filterDate={isBusinessDate} />
                                 <p className={`mt-1.5 text-xs flex items-center gap-1 h-4 ${isSingleDateHoliday ? 'text-amber-600' : 'text-transparent'}`}>
                                     <AlertTriangle size={12} />土日祝日は有給申請できません
                                 </p>
                             </>
+                        ) : multiMode ? (
+                            <div className="space-y-2">
+                                <MultiDateCalendar selectedDates={selectedDates} onChange={handleSelectedDatesChange} filterDate={isBusinessDate} />
+                                <div className="min-h-8 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5">
+                                    {selectedDates.length > 0 ? (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {selectedDates.map(d => (
+                                                <span key={d} className={`inline-flex items-center gap-1 rounded-full bg-white border px-2 py-1 text-xs ${isNonBusinessDay(d) ? 'border-amber-300 text-amber-700' : 'border-gray-200 text-gray-700'}`}>
+                                                    {formatDisplay(d)}
+                                                    <button type="button" onClick={() => removeSelectedDate(d)} className="text-gray-400 hover:text-red-500" title="削除">
+                                                        <X size={12} />
+                                                    </button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <span className="text-xs text-gray-400">申請する日付を追加してください</span>
+                                    )}
+                                </div>
+                                {multiHolidayDates.length > 0 && (
+                                    <p className="text-xs text-amber-600 flex items-center gap-1">
+                                        <AlertTriangle size={12} />土日祝は有給申請できません
+                                    </p>
+                                )}
+                            </div>
                         ) : (
                             <div className="space-y-2">
                                 <div className="flex items-center gap-1.5">
@@ -282,11 +396,7 @@ export function PaidLeave() {
                                         <DateStepper value={dateTo} onChange={handleDateToChange} startDate={rangeStartDate} endDate={rangeEndDate} />
                                     </div>
                                 </div>
-                                <div className="flex items-center justify-between pt-0.5">
-                                    <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                                        <input type="checkbox" checked={excludeHolidays} onChange={e => setExcludeHolidays(e.target.checked)} className="w-3.5 h-3.5 rounded accent-[#007B7E]" />
-                                        <span className="text-xs text-gray-500">土日祝日は除く</span>
-                                    </label>
+                                <div className="flex items-center justify-end pt-0.5">
                                     {previewDates.length > 0 && (
                                         <span className="text-xs text-[#007B7E] font-bold bg-[#f0fafa] px-2 py-0.5 rounded-full">
                                             {previewDates.length}日分
@@ -381,7 +491,7 @@ export function PaidLeave() {
             <div className="mt-3">
                 <button
                     onClick={handleSubmit}
-                    disabled={loading || !isConfigured || !selectedRouteId || isCommentEmpty || isSingleDateHoliday || (rangeMode && previewDates.length === 0)}
+                    disabled={loading || !isConfigured || !selectedRouteId || isCommentEmpty || hasHolidayDateError || (isBatchMode && targetDates.length === 0)}
                     className="w-full bg-[#007B7E] hover:bg-[#006669] text-white disabled:bg-gray-300 disabled:cursor-not-allowed p-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.98]"
                 >
                     {loading ? (

@@ -121,12 +121,94 @@ async function logPageState(page: Page, label: string) {
  * - React native setter でキーボードタイピングを排除（charDelay 0）
  * - オプション探索・クリックは Playwright locator（React synthetic event 発火）
  */
+function getComboboxSearchKey(valueText: string): string {
+    const trimmed = (valueText || '').trim();
+    const strippedFull = trimmed.replace(/^[\s\u2460-\u2473\u3251-\u325F\u32B1-\u32BF\u2776-\u277F\u24EB-\u24F4\u30FB\-_]+/u, '').trim();
+    const beforeParen = strippedFull.split(/[\uFF08(]/)[0]?.trim();
+    if (beforeParen && /[A-Za-z]/.test(beforeParen)) return beforeParen.slice(0, 24).trim();
+
+    const parenthesizedAscii = strippedFull.match(/[\uFF08(]([A-Za-z][A-Za-z0-9 _-]{2,})[\uFF09)]/);
+    if (parenthesizedAscii?.[1]) return parenthesizedAscii[1].slice(0, 16).trim();
+
+    const asciiWord = strippedFull.match(/[A-Za-z][A-Za-z0-9 _-]{4,}/);
+    if (asciiWord?.[0]) return asciiWord[0].slice(0, 16).trim();
+
+    const stripped = strippedFull.slice(0, 8).trim();
+    return stripped || trimmed.slice(0, 8);
+}
+
+async function closeComboboxOverlays(page: Page, selector?: string): Promise<void> {
+    await page.evaluate((sel) => {
+        const target = (sel ? document.querySelector(sel) : document.activeElement) as HTMLElement | null;
+        const escapeInit = { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true };
+
+        target?.dispatchEvent(new KeyboardEvent('keydown', escapeInit));
+        document.dispatchEvent(new KeyboardEvent('keydown', escapeInit));
+        target?.dispatchEvent(new KeyboardEvent('keyup', escapeInit));
+        document.dispatchEvent(new KeyboardEvent('keyup', escapeInit));
+
+        if (target) {
+            target.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+            target.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+            target.blur();
+        }
+
+        const openNodes = Array.from(document.querySelectorAll<HTMLElement>(
+            '.vb-comboBox__listBox--open, [role="listbox"], [data-floating-ui-portal] [role="option"]',
+        ));
+        for (const node of openNodes) {
+            const container = node.getAttribute('role') === 'option'
+                ? node.closest<HTMLElement>('[role="listbox"], .vb-comboBox__listBox--open')
+                : node;
+            if (!container) continue;
+            container.setAttribute('data-codex-combobox-hidden', '1');
+            container.classList.remove('vb-comboBox__listBox--open');
+            container.style.pointerEvents = 'none';
+            container.style.display = 'none';
+            container.setAttribute('aria-hidden', 'true');
+        }
+    }, selector || null).catch(() => {});
+}
+
+async function clickMarkedComboboxOption(page: Page, markerSelector: string): Promise<boolean> {
+    const clickedByLocator = await page.locator(markerSelector)
+        .click({ force: true, timeout: 1500 })
+        .then(() => true)
+        .catch(() => false);
+    if (clickedByLocator) return true;
+
+    return page.evaluate((sel) => {
+        const chosen = document.querySelector<HTMLElement>(sel);
+        if (!chosen) return false;
+        chosen.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        for (const evtType of ['pointerover','mouseover','pointerdown','mousedown','pointerup','mouseup','click']) {
+            chosen.dispatchEvent(new MouseEvent(evtType, {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                buttons: evtType.endsWith('down') ? 1 : 0,
+            }));
+        }
+        chosen.click();
+        return true;
+    }, markerSelector).catch(() => false);
+}
+
 async function handleCombobox(page: Page, selector: string, valueText: string) {
     const trimmed = (valueText || '').trim();
     if (!trimmed) return;
     console.log(`[RPA] Combobox: ${selector} -> "${trimmed}"`);
 
     try {
+        await page.evaluate(() => {
+            for (const el of Array.from(document.querySelectorAll<HTMLElement>('[data-codex-combobox-hidden="1"]'))) {
+                el.removeAttribute('data-codex-combobox-hidden');
+                el.style.pointerEvents = '';
+                el.style.display = '';
+                el.removeAttribute('aria-hidden');
+            }
+        }).catch(() => {});
+
         // 1. フォーカス（JS evaluate でスクロールなし）
         await page.evaluate((sel) => {
             const el = document.querySelector(sel) as HTMLInputElement | null;
@@ -138,7 +220,7 @@ async function handleCombobox(page: Page, selector: string, valueText: string) {
 
         // 2. React native setter で検索文字列を注入（keyboard.type より高速）
         //    先頭の装飾文字（①②...）を除いた最初の6文字を検索キーにする
-        const searchKey = trimmed.replace(/^[\s①-⑩・\-]+/, '').slice(0, 6).trim() || trimmed.slice(0, 6);
+        const searchKey = getComboboxSearchKey(trimmed);
         await page.evaluate(({ sel, val }) => {
             const el = document.querySelector(sel) as HTMLInputElement | null;
             if (!el) return;
@@ -156,12 +238,16 @@ async function handleCombobox(page: Page, selector: string, valueText: string) {
         //    aria-controls は ARIA 用（クリックハンドラなし）。
         //    実際に React イベントハンドラがあるのは .vb-comboBox__listBox--open 内のオプション。
         const visualItemSel = '.vb-comboBox__listBox--open [role="option"]';
-        await page.waitForSelector(visualItemSel, { state: 'attached', timeout: 2000 }).catch(() => {});
+        await page.waitForSelector(visualItemSel, { state: 'attached', timeout: 1000 }).catch(() => {});
 
         // 4. テキスト照合 + React フルイベントシーケンス発火（evaluate 1回で完結）
         //    vb-scrollPortal の pointer-events 遮断は evaluate + dispatchEvent では関係ない
+        const markerSelector = '[data-codex-combobox-choice="1"]';
         const clicked = await page.evaluate(({ optSel, target }: { optSel: string; target: string }) => {
             const norm = (s: string) => s.trim().replace(/\s+/g, ' ');
+            for (const el of Array.from(document.querySelectorAll<HTMLElement>('[data-codex-combobox-choice]'))) {
+                el.removeAttribute('data-codex-combobox-choice');
+            }
             const options = Array.from(document.querySelectorAll<HTMLElement>(optSel));
             if (!options.length) return { ok: false, text: '' };
             const t = norm(target);
@@ -178,28 +264,26 @@ async function handleCombobox(page: Page, selector: string, valueText: string) {
             if (!chosen) chosen = options[0];
 
             // React 17+ root-delegation: bubbles:true でルートまで届く
-            for (const evtType of ['pointerover','mouseover','pointerdown','mousedown',
-                                   'pointerup','mouseup','click']) {
-                chosen.dispatchEvent(new MouseEvent(evtType, {
-                    bubbles: true, cancelable: true, view: window,
-                    buttons: evtType.endsWith('down') ? 1 : 0
-                }));
-            }
+            chosen.setAttribute('data-codex-combobox-choice', '1');
+            chosen.scrollIntoView({ block: 'nearest', inline: 'nearest' });
             return { ok: true, text: chosen.textContent?.trim() ?? '' };
         }, { optSel: visualItemSel, target: trimmed });
 
         if (clicked.ok) {
+            const optionClicked = await clickMarkedComboboxOption(page, markerSelector);
+            if (!optionClicked) throw new Error(`Combobox option click failed: ${trimmed}`);
+            await page.waitForTimeout(150);
             console.log(`[RPA] Selected: "${clicked.text}"`);
         } else {
             // オプションが出なかった場合、少し待ってリトライ（SPA初期化遅延対策）
-            console.warn(`[RPA] No options found for ${selector}, retrying after 1s...`);
-            await page.keyboard.press('Escape');
-            await page.waitForTimeout(1000);
+            console.warn(`[RPA] No options found for ${selector}, retrying quickly...`);
+            await closeComboboxOverlays(page, selector);
+            await page.waitForTimeout(200);
             await page.evaluate((sel) => {
                 const el = document.querySelector(sel) as HTMLInputElement | null;
                 if (el) { el.scrollIntoView({ block: 'nearest' }); el.focus(); el.click(); }
             }, selector);
-            const retrySearchKey = trimmed.replace(/^[\s①-⑩・\-]+/, '').slice(0, 6).trim() || trimmed.slice(0, 6);
+            const retrySearchKey = getComboboxSearchKey(trimmed);
             await page.evaluate(({ sel, val }) => {
                 const el = document.querySelector(sel) as HTMLInputElement | null;
                 if (!el) return;
@@ -210,19 +294,24 @@ async function handleCombobox(page: Page, selector: string, valueText: string) {
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
             }, { sel: selector, val: retrySearchKey });
-            await page.waitForSelector(visualItemSel, { state: 'attached', timeout: 3000 }).catch(() => {});
+            await page.waitForSelector(visualItemSel, { state: 'attached', timeout: 1200 }).catch(() => {});
             const retryClicked = await page.evaluate(({ optSel, target }: { optSel: string; target: string }) => {
                 const norm = (s: string) => s.trim().replace(/\s+/g, ' ');
+                for (const el of Array.from(document.querySelectorAll<HTMLElement>('[data-codex-combobox-choice]'))) {
+                    el.removeAttribute('data-codex-combobox-choice');
+                }
                 const options = Array.from(document.querySelectorAll<HTMLElement>(optSel));
                 if (!options.length) return { ok: false, text: '' };
                 let chosen = options.find(o => norm(o.textContent || '') === norm(target)) || options.find(o => norm(o.textContent || '').includes(norm(target))) || options[0];
                 if (!chosen) return { ok: false, text: '' };
-                for (const evtType of ['pointerover','mouseover','pointerdown','mousedown','pointerup','mouseup','click']) {
-                    chosen.dispatchEvent(new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window, buttons: evtType.endsWith('down') ? 1 : 0 }));
-                }
+                chosen.setAttribute('data-codex-combobox-choice', '1');
+                chosen.scrollIntoView({ block: 'nearest', inline: 'nearest' });
                 return { ok: true, text: chosen.textContent?.trim() ?? '' };
             }, { optSel: visualItemSel, target: trimmed });
             if (retryClicked.ok) {
+                const optionClicked = await clickMarkedComboboxOption(page, markerSelector);
+                if (!optionClicked) throw new Error(`Combobox retry option click failed: ${trimmed}`);
+                await page.waitForTimeout(150);
                 console.log(`[RPA] Retry selected: "${retryClicked.text}"`);
             } else {
                 console.warn(`[RPA] Retry also failed, pressing Enter as fallback`);
@@ -230,8 +319,7 @@ async function handleCombobox(page: Page, selector: string, valueText: string) {
             }
         }
 
-        // 6. Tab でフォーム検証トリガー
-        await page.keyboard.press('Tab');
+        await closeComboboxOverlays(page, selector);
 
     } catch (err) {
         console.warn(`[RPA] Combobox fallback for ${selector}:`, err);
@@ -243,7 +331,7 @@ async function handleCombobox(page: Page, selector: string, valueText: string) {
             await page.keyboard.type(trimmed, { delay: 0 });
             await page.waitForTimeout(300);
             await page.keyboard.press('Enter');
-            await page.keyboard.press('Tab');
+            await closeComboboxOverlays(page, selector);
         } catch { /* ignore */ }
     }
 }
@@ -255,6 +343,62 @@ async function findSelector(page: Page, selectors: string[], timeout = 8000): Pr
             page.waitForSelector(sel, { state: 'visible', timeout }).then(() => sel)
         )
     ).catch(() => null);
+}
+
+async function clickSelectorImmediately(page: Page, selector: string): Promise<void> {
+    await closeComboboxOverlays(page);
+    const handle = await page.$(selector);
+    if (!handle) throw new Error(`Click target not found: ${selector}`);
+    await handle.evaluate((el: HTMLElement) => {
+        el.scrollIntoView({ block: 'center', inline: 'nearest' });
+        el.click();
+    });
+}
+
+async function selectOptionIfPresent(page: Page, selector: string, value: string, timeout = 1000): Promise<boolean> {
+    const handle = await page.$(selector);
+    if (!handle) return false;
+    try {
+        await page.selectOption(selector, value, { timeout });
+        return true;
+    } catch (err) {
+        console.warn(`[RPA] selectOption skipped: ${selector}`, err);
+        return false;
+    }
+}
+
+async function gotoApprovalRequestForm(page: Page, url: string, fallbackUrl?: string): Promise<void> {
+    let navigationError: unknown = null;
+    try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    } catch (err) {
+        navigationError = err;
+        console.warn(`[RPA] Form navigation warning: ${url}`, err);
+    }
+
+    const formReady = await findSelector(page, [
+        'input#approval-request-fields-date',
+        'input[name="approval_request[target_date]"]',
+        'input[type="date"]',
+        'input#approval-request-fields-route-id',
+        'select[name="approval_request[approval_flow_route_id]"]',
+    ], 5000);
+    if (formReady || page.url().includes('accounts.secure.freee.co.jp') || page.url().includes('login')) return;
+
+    if (fallbackUrl) {
+        await page.goto(fallbackUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        const fallbackReady = await findSelector(page, [
+            'input#approval-request-fields-date',
+            'input[name="approval_request[target_date]"]',
+            'input[type="date"]',
+            'input#approval-request-fields-route-id',
+            'select[name="approval_request[approval_flow_route_id]"]',
+        ], 5000);
+        if (fallbackReady || page.url().includes('accounts.secure.freee.co.jp') || page.url().includes('login')) return;
+    }
+
+    const message = navigationError instanceof Error ? navigationError.message : String(navigationError || '');
+    throw new Error(`申請フォームを開けませんでした: ${page.url()}${message ? ` (${message})` : ''}`);
 }
 
 /**
@@ -297,6 +441,41 @@ async function fillInputReliably(page: Page, selector: string, value: string, ma
 }
 
 /** ログイン処理（セッション保存まで）。セッションが既に有効な場合はスキップ。 */
+async function fillInputAndBlurReliably(page: Page, selector: string, value: string, maxRetry = 3): Promise<boolean> {
+    for (let attempt = 0; attempt < maxRetry; attempt++) {
+        await page.evaluate(({ sel, val }) => {
+            const el = document.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement | null;
+            if (!el) return;
+            el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            el.focus();
+            el.click();
+            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const nativeSet = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (nativeSet) { nativeSet.call(el, val); } else { el.value = val; }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            el.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+            el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+            el.blur();
+            if (document.body) {
+                document.body.setAttribute('tabindex', '-1');
+                document.body.focus({ preventScroll: true });
+            }
+        }, { sel: selector, val: value });
+
+        const actual = await page.evaluate((sel) => {
+            const el = document.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement | null;
+            return el?.value ?? '';
+        }, selector);
+
+        if (actual === value) return true;
+        console.warn(`[RPA] fillInputAndBlurReliably: attempt ${attempt + 1} failed for ${selector}: expected "${value}", got "${actual}"`);
+        await page.waitForTimeout(100);
+    }
+    return false;
+}
+
 async function doLogin(page: Page, context: BrowserContext, email: string, password: string, savedSession: object | null): Promise<void> {
     const loginUrl = 'https://accounts.secure.freee.co.jp/login/hr';
     // セッション確認はトップページで行う（フォームURLへの遷移は呼び出し元に任せる）
@@ -498,13 +677,14 @@ export async function fetchManagerOvertimeSummariesViaBrowser(
                 const employeeId = idMatch ? Number(idMatch[1]) : 0;
                 const overtimeMins = timeToMinutes(cells[8]);
                 const holidayWorkMins = timeToMinutes(cells[9]);
-                const totalOvertimeMins = overtimeMins + holidayWorkMins;
+                const latenightWorkMins = timeToMinutes(cells[10]);
+                const totalOvertimeMins = overtimeMins + holidayWorkMins + latenightWorkMins;
                 return {
                     employeeId,
                     employeeNumber: cells[1] || '',
                     employeeName: cells[0] || `ID:${employeeId}`,
                     canReadSummary: true,
-                    overThreshold: overtimeMins >= thresholdMins,
+                    overThreshold: totalOvertimeMins >= thresholdMins,
                     workDays: daysToNumber(cells[5]),
                     totalWorkMins: timeToMinutes(cells[6]),
                     normalWorkMins: timeToMinutes(cells[7]),
@@ -513,7 +693,7 @@ export async function fetchManagerOvertimeSummariesViaBrowser(
                     totalOvertimeMins,
                     prescribedHolidayWorkMins: 0,
                     holidayWorkMins,
-                    latenightWorkMins: timeToMinutes(cells[10]),
+                    latenightWorkMins,
                     absenceDays: daysToNumber(cells[11]),
                     paidHolidays: 0,
                     paidHolidaysLeft: 0,
@@ -702,7 +882,7 @@ export async function submitOvertimeViaBrowser(payload: AutomationPayload & { he
         if (routeInput) {
             await handleCombobox(page, 'input#approval-request-fields-route-id', routeDisplayName);
         } else {
-            await page.selectOption('select[name="approval_request[approval_flow_route_id]"]', payload.routeId.toString()).catch(() => {});
+            await selectOptionIfPresent(page, 'select[name="approval_request[approval_flow_route_id]"]', payload.routeId.toString());
         }
 
         // 部署
@@ -712,7 +892,7 @@ export async function submitOvertimeViaBrowser(payload: AutomationPayload & { he
             if (deptInput && deptDisplayName) {
                 await handleCombobox(page, 'input#approval-request-fields-group-id', deptDisplayName);
             } else if (payload.departmentId) {
-                await page.selectOption('select[name="approval_request[department_id]"]', payload.departmentId.toString()).catch(() => {});
+                await selectOptionIfPresent(page, 'select[name="approval_request[department_id]"]', payload.departmentId.toString());
             }
         }
 
@@ -788,11 +968,7 @@ export async function submitOvertimeViaBrowser(payload: AutomationPayload & { he
         console.log('[RPA] Verification complete.');
 
         // フォーム検証トリガー（body クリックで blur → React validation）
-        await page.evaluate(() => {
-            document.body.click();
-            const el = document.activeElement as HTMLElement | null;
-            if (el?.blur) el.blur();
-        });
+        await closeComboboxOverlays(page);
 
         // 申請ボタンが有効になるまで待つ（最大15秒）
         console.log('[RPA] Waiting for submit button...');
@@ -809,7 +985,7 @@ export async function submitOvertimeViaBrowser(payload: AutomationPayload & { he
 
         console.log('[RPA] Submitting...');
         const urlBeforeSubmit = page.url();
-        await page.click(enabledSubmitSel);
+        await clickSelectorImmediately(page, enabledSubmitSel);
 
         // 申請後の成功判定: 取り下げボタン / URL変化(新規→詳細) / エラー表示 を race
         console.log('[RPA] Waiting for success or error...');
@@ -1266,7 +1442,7 @@ export async function submitPaidLeaveViaBrowser(payload: PaidLeavePayload & { he
             console.log(`[RPA] Leave unit select found, setting to "${unitValue}"...`);
 
             // Playwright selectOption で選択
-            await page.selectOption(unitSelectSel, unitValue).catch(() => {});
+            await selectOptionIfPresent(page, unitSelectSel, unitValue);
             await page.waitForTimeout(500);
 
             // React native setter + イベント発火（補完）
@@ -1290,7 +1466,7 @@ export async function submitPaidLeaveViaBrowser(payload: PaidLeavePayload & { he
                 console.warn(`[RPA] Leave unit mismatch, retrying: got "${selectedVal}", want "${unitValue}"`);
                 await page.click(unitSelectSel);
                 await page.waitForTimeout(300);
-                await page.selectOption(unitSelectSel, unitValue).catch(() => {});
+                await selectOptionIfPresent(page, unitSelectSel, unitValue);
                 await page.waitForTimeout(500);
                 selectedVal = await page.evaluate((sel) => {
                     const el = document.querySelector(sel) as HTMLSelectElement | null;
@@ -1338,7 +1514,7 @@ export async function submitPaidLeaveViaBrowser(payload: PaidLeavePayload & { he
 
         console.log('[RPA] Submitting paid leave...');
         const plUrlBefore = page.url();
-        await page.click(enabledSubmitSel);
+        await clickSelectorImmediately(page, enabledSubmitSel);
 
         // 申請後の成功判定: 取り下げボタン / URL変化 / エラー表示 を race
         const plResult = await Promise.race([
@@ -1456,7 +1632,7 @@ export async function submitMonthlyCloseViaBrowser(payload: MonthlyClosePayload 
                 if (deptDisplayName) {
                     await handleCombobox(page, 'input#approval-request-fields-group-id', deptDisplayName);
                 } else if (payload.departmentId) {
-                    await page.selectOption('select[name="approval_request[department_id]"]', payload.departmentId.toString()).catch(() => {});
+                    await selectOptionIfPresent(page, 'select[name="approval_request[department_id]"]', payload.departmentId.toString());
                 }
             }
         }
@@ -1477,11 +1653,7 @@ export async function submitMonthlyCloseViaBrowser(payload: MonthlyClosePayload 
         }
 
         // フォーム検証トリガー
-        await page.evaluate(() => {
-            document.body.click();
-            const el = document.activeElement as HTMLElement | null;
-            if (el?.blur) el.blur();
-        });
+        await closeComboboxOverlays(page);
 
         // 申請ボタン有効待ち（最大15秒）
         console.log('[RPA] Waiting for submit button...');
@@ -1497,7 +1669,7 @@ export async function submitMonthlyCloseViaBrowser(payload: MonthlyClosePayload 
         }
 
         console.log('[RPA] Submitting monthly close...');
-        await page.click(enabledSubmitSel);
+        await clickSelectorImmediately(page, enabledSubmitSel);
 
         // 申請後、成功 or エラーを race で待つ（最大20秒）
         const mcResult = await Promise.race([
@@ -1544,7 +1716,7 @@ export async function submitMonthlyCloseViaBrowser(payload: MonthlyClosePayload 
 export interface CancelRequestPayload {
     email: string;
     password: string;
-    requestType: 'overtime' | 'paid_holiday' | 'monthly_attendance';
+    requestType: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance';
     requestId: number;
     action: 'withdraw' | 'delete';
     headless?: boolean;
@@ -1674,8 +1846,11 @@ export interface CancelBatchPayload {
     email: string;
     password: string;
     items: Array<{
-        requestType: 'overtime' | 'paid_holiday' | 'monthly_attendance';
+        requestType: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time';
         requestId: number;
+        status?: string;
+        currentRound?: number | null;
+        currentStepId?: number | null;
     }>;
     action: 'withdraw' | 'delete';
     headless?: boolean;
@@ -1691,8 +1866,19 @@ export interface CancelBatchResult {
 const CANCEL_TYPE_NAME_MAP: Record<string, string> = {
     overtime: 'OvertimeWork',
     paid_holiday: 'PaidHoliday',
+    holiday_work: 'HolidayWork',
     monthly_attendance: 'MonthlyAttendance',
+    work_time: 'WorkTime',
 };
+
+const CANCEL_TEXT_WITHDRAW = '\u7533\u8acb\u3092\u53d6\u308a\u4e0b\u3052\u308b';
+const CANCEL_TEXT_DELETE = '\u524a\u9664';
+const CANCEL_TEXT_REAPPLY = '\u518d\u7533\u8acb';
+const CANCEL_WITHDRAW_SELECTOR = `button:has-text("${CANCEL_TEXT_WITHDRAW}")`;
+const CANCEL_DELETE_SELECTOR = `button.vb-button--appearanceSecondary:has-text("${CANCEL_TEXT_DELETE}")`;
+const CANCEL_DANGER_DELETE_SELECTOR = `button.vb-button--danger:has-text("${CANCEL_TEXT_DELETE}")`;
+const CANCEL_AFTER_WITHDRAW_SELECTOR = `${CANCEL_DELETE_SELECTOR}, button:has-text("${CANCEL_TEXT_REAPPLY}")`;
+const CANCEL_READY_SELECTOR = `${CANCEL_WITHDRAW_SELECTOR}, ${CANCEL_AFTER_WITHDRAW_SELECTOR}`;
 
 export async function cancelRequestBatchViaBrowser(payload: CancelBatchPayload): Promise<CancelBatchResult> {
     const { email, password, items, action, onProgress } = payload;
@@ -1758,17 +1944,17 @@ export async function cancelRequestBatchViaBrowser(payload: CancelBatchPayload):
                 }
 
                 // SPA レンダリング待ち
-                await page.waitForTimeout(2500);
+                await page.waitForSelector(CANCEL_READY_SELECTOR, { state: 'visible', timeout: 6000 }).catch(() => {});
                 console.log(`[RPA CancelBatch] Current URL: ${page.url()}`);
 
                 if (action === 'withdraw') {
                     // 取り下げ
                     const btn = await page.waitForSelector(
                         'button:has-text("申請を取り下げる")',
-                        { state: 'visible', timeout: 15000 }
+                        { state: 'visible', timeout: 8000 }
                     ).catch(() => null);
                     if (!btn) throw new Error('「申請を取り下げる」ボタンが見つかりませんでした。申請が承認待ち状態でない可能性があります。');
-                    await btn.click();
+                    await btn.evaluate((el: HTMLElement) => el.click()).catch(() => btn.click({ timeout: 3000 }));
                     // freee は確認ダイアログなしで直接取り下げ完了
                     await page.waitForSelector('button.vb-button--appearanceSecondary:has-text("削除"), button:has-text("再申請")', { state: 'visible', timeout: 10000 }).catch(() => {});
                 } else {
@@ -1776,7 +1962,7 @@ export async function cancelRequestBatchViaBrowser(payload: CancelBatchPayload):
                     const withdrawBtn = await page.$('button:has-text("申請を取り下げる")');
                     if (withdrawBtn) {
                         console.log('[RPA CancelBatch] in_progress: withdrawing first...');
-                        await withdrawBtn.click();
+                        await withdrawBtn.evaluate((el: HTMLElement) => el.click()).catch(() => withdrawBtn.click({ timeout: 3000 }));
                         await page.waitForSelector('button.vb-button--appearanceSecondary:has-text("削除"), button:has-text("再申請")', { state: 'visible', timeout: 10000 }).catch(() => {});
                         console.log('[RPA CancelBatch] Withdrawal complete, deleting...');
                     }
@@ -1784,20 +1970,20 @@ export async function cancelRequestBatchViaBrowser(payload: CancelBatchPayload):
                     // 削除ボタン（テキスト「削除」、class vb-button--appearanceSecondary）
                     const deleteBtn = await page.waitForSelector(
                         'button.vb-button--appearanceSecondary:has-text("削除")',
-                        { state: 'visible', timeout: 10000 }
+                        { state: 'visible', timeout: 6000 }
                     ).catch(() => null);
                     if (!deleteBtn) throw new Error('「削除」ボタンが見つかりませんでした。');
-                    await deleteBtn.click();
+                    await deleteBtn.evaluate((el: HTMLElement) => el.click()).catch(() => deleteBtn.click({ timeout: 3000 }));
                     // 確認ダイアログ: danger スタイルの「削除」ボタン
                     const dangerDeleteBtn = await page.waitForSelector(
                         'button.vb-button--danger:has-text("削除")',
-                        { state: 'visible', timeout: 5000 }
+                        { state: 'visible', timeout: 3000 }
                     ).catch(() => null);
                     if (dangerDeleteBtn) {
-                        await dangerDeleteBtn.click();
-                        await page.waitForTimeout(1500);
+                        await dangerDeleteBtn.evaluate((el: HTMLElement) => el.click()).catch(() => dangerDeleteBtn.click({ timeout: 3000 }));
+                        await page.waitForSelector(CANCEL_DANGER_DELETE_SELECTOR, { state: 'hidden', timeout: 4000 }).catch(() => page.waitForTimeout(300));
                     } else {
-                        await page.waitForTimeout(1000);
+                        await page.waitForTimeout(300);
                     }
                 }
 
@@ -1832,7 +2018,7 @@ export async function cancelRequestBatchViaBrowser(payload: CancelBatchPayload):
 // ─────────────────────────────────────────────────────────────
 
 export interface ApproveBatchItem {
-    requestType: 'overtime' | 'paid_holiday' | 'monthly_attendance' | 'work_time';
+    requestType: 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time';
     requestId: number;
 }
 
@@ -2078,6 +2264,7 @@ async function performApprovalAction(
 const TYPE_NAME_MAP: Record<ApproveBatchItem['requestType'], string> = {
     overtime: 'OvertimeWork',
     paid_holiday: 'PaidHoliday',
+    holiday_work: 'HolidayWork',
     monthly_attendance: 'MonthlyAttendance',
     work_time: 'WorkTime',
 };
@@ -2538,17 +2725,14 @@ export async function submitOvertimeBatchViaBrowser(payload: OvertimeBatchPayloa
 
                 // 新規フォームに遷移（SPAキャッシュバイパスのため _t パラメータ付加）
                 const batchOvertimeUrl = `${overtimeUrl}&_t=${Date.now()}`;
-                await page.goto(batchOvertimeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-                if (!page.url().includes('p.secure.freee.co.jp') && !page.url().includes('overtime_work')) {
-                    await page.goto(overtimeLegacyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                }
+                await gotoApprovalRequestForm(page, batchOvertimeUrl, overtimeLegacyUrl);
 
                 // ログインリダイレクトの再チェック
                 if (page.url().includes('accounts.secure.freee.co.jp') || page.url().includes('login')) {
                     console.log('[RPA Batch] Redirected to login, re-logging in...');
                     await doLogin(page, context, email, password, null);
                     await saveSessionState(context);
-                    await page.goto(batchOvertimeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+                    await gotoApprovalRequestForm(page, batchOvertimeUrl, overtimeLegacyUrl);
                 }
 
                 console.log(`[RPA Batch] Form URL: ${page.url()}`);
@@ -2636,7 +2820,7 @@ export async function submitOvertimeBatchViaBrowser(payload: OvertimeBatchPayloa
                 if (routeInput) {
                     await handleCombobox(page, 'input#approval-request-fields-route-id', routeDisplayName);
                 } else {
-                    await page.selectOption('select[name="approval_request[approval_flow_route_id]"]', payload.routeId.toString()).catch(() => {});
+                    await selectOptionIfPresent(page, 'select[name="approval_request[approval_flow_route_id]"]', payload.routeId.toString());
                 }
 
                 // 部署
@@ -2646,7 +2830,7 @@ export async function submitOvertimeBatchViaBrowser(payload: OvertimeBatchPayloa
                     if (deptInput && deptDisplayName) {
                         await handleCombobox(page, 'input#approval-request-fields-group-id', deptDisplayName);
                     } else if (payload.departmentId) {
-                        await page.selectOption('select[name="approval_request[department_id]"]', payload.departmentId.toString()).catch(() => {});
+                        await selectOptionIfPresent(page, 'select[name="approval_request[department_id]"]', payload.departmentId.toString());
                     }
                 }
 
@@ -2708,7 +2892,7 @@ export async function submitOvertimeBatchViaBrowser(payload: OvertimeBatchPayloa
                 }
 
                 // blur でバリデーション発火
-                await page.evaluate(() => { document.body.click(); (document.activeElement as HTMLElement | null)?.blur?.(); });
+                await closeComboboxOverlays(page);
 
                 // 申請ボタン
                 const enabledSubmitSel = await findSelector(page, [
@@ -2718,7 +2902,8 @@ export async function submitOvertimeBatchViaBrowser(payload: OvertimeBatchPayloa
                 ], 15000);
                 if (!enabledSubmitSel) throw new Error('申請ボタンが有効になりませんでした。');
 
-                await page.click(enabledSubmitSel);
+                const urlBeforeBatch = page.url();
+                await clickSelectorImmediately(page, enabledSubmitSel);
                 await page.waitForTimeout(2000);
 
                 // エラーチェック
@@ -2738,7 +2923,6 @@ export async function submitOvertimeBatchViaBrowser(payload: OvertimeBatchPayloa
                 }
 
                 // 成功確認（race: 取り下げボタン / URL変化 / エラー、最大15秒）
-                const urlBeforeBatch = page.url();
                 const batchSuccessOrError = await Promise.race([
                     page.waitForSelector('button:has-text("申請を取り下げる")', { state: 'visible', timeout: 15000 }).then(() => 'withdraw' as const).catch(() => null),
                     page.waitForFunction((prevUrl) => window.location.href !== prevUrl && !window.location.href.includes('/new'), urlBeforeBatch, { timeout: 15000 }).then(() => 'url_changed' as const).catch(() => null),
@@ -2860,16 +3044,13 @@ export async function submitPaidLeaveBatchViaBrowser(payload: PaidLeaveBatchPayl
 
                 // 新規フォームに遷移（SPAキャッシュバイパスのため _t パラメータ付加）
                 const batchPaidLeaveUrl = `${paidLeaveUrl}&_t=${Date.now()}`;
-                await page.goto(batchPaidLeaveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-                if (!page.url().includes('p.secure.freee.co.jp')) {
-                    await page.goto(paidLeaveLegacyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                }
+                await gotoApprovalRequestForm(page, batchPaidLeaveUrl, paidLeaveLegacyUrl);
 
                 // ログインリダイレクトの再チェック
                 if (page.url().includes('accounts.secure.freee.co.jp') || page.url().includes('login')) {
                     await doLogin(page, context, email, password, null);
                     await saveSessionState(context);
-                    await page.goto(batchPaidLeaveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+                    await gotoApprovalRequestForm(page, batchPaidLeaveUrl, paidLeaveLegacyUrl);
                 }
 
                 // 日付フィールド + React マウント待機
@@ -2944,7 +3125,7 @@ export async function submitPaidLeaveBatchViaBrowser(payload: PaidLeaveBatchPayl
                 const unitSelectFound = await page.waitForSelector(unitSelectSel, { timeout: 15000 }).catch(() => null);
 
                 if (unitSelectFound) {
-                    await page.selectOption(unitSelectSel, unitValue).catch(() => {});
+                    await selectOptionIfPresent(page, unitSelectSel, unitValue);
                     await page.waitForTimeout(500);
                     await page.evaluate(({ sel, val }) => {
                         const el = document.querySelector(sel) as HTMLSelectElement | null;
@@ -2963,7 +3144,7 @@ export async function submitPaidLeaveBatchViaBrowser(payload: PaidLeaveBatchPayl
                     if (selectedVal !== unitValue) {
                         await page.click(unitSelectSel);
                         await page.waitForTimeout(300);
-                        await page.selectOption(unitSelectSel, unitValue).catch(() => {});
+                        await selectOptionIfPresent(page, unitSelectSel, unitValue);
                         await page.waitForTimeout(500);
                         const retryVal = await page.evaluate((sel) => (document.querySelector(sel) as HTMLSelectElement | null)?.value || '', unitSelectSel);
                         if (retryVal !== unitValue) throw new Error(`取得単位の選択に失敗しました。期待: ${unitValue}, 実際: ${retryVal}`);
@@ -2986,11 +3167,11 @@ export async function submitPaidLeaveBatchViaBrowser(payload: PaidLeaveBatchPayl
                 ], 15000);
                 if (!enabledSubmitSel) throw new Error('申請ボタンが有効になりませんでした。');
 
-                await page.click(enabledSubmitSel);
+                const plUrlBeforeBatch = page.url();
+                await clickSelectorImmediately(page, enabledSubmitSel);
                 await page.waitForTimeout(2000);
 
                 // 成功確認（race: 取り下げボタン / URL変化 / エラー、最大15秒）
-                const plUrlBeforeBatch = page.url();
                 const plBatchResult = await Promise.race([
                     page.waitForSelector('button:has-text("申請を取り下げる")', { state: 'visible', timeout: 15000 }).then(() => 'withdraw' as const).catch(() => null),
                     page.waitForFunction((prevUrl) => window.location.href !== prevUrl && !window.location.href.includes('/new'), plUrlBeforeBatch, { timeout: 15000 }).then(() => 'url_changed' as const).catch(() => null),
@@ -3020,6 +3201,349 @@ export async function submitPaidLeaveBatchViaBrowser(payload: PaidLeaveBatchPayl
         return { total, succeeded, failed };
     } finally {
         console.log('[RPA Batch] Closing browser.');
+        await browser.close();
+    }
+}
+
+export interface HolidayWorkBatchPayload {
+    email: string;
+    password: string;
+    companyId: number;
+    employeeId?: number;
+    items: Array<{ targetDate: string; startAt: string; endAt: string }>;
+    comment: string;
+    routeId: number;
+    routeName: string;
+    departmentId?: number;
+    departmentName?: string;
+    headless?: boolean;
+    onProgress?: (progress: { current: number; total: number; date: string; success: boolean; error?: string }) => void;
+}
+
+async function fillHolidayWorkRequestForm(
+    page: Page,
+    payload: HolidayWorkBatchPayload,
+    item: HolidayWorkBatchPayload['items'][number],
+    normalizedDate: string,
+    options: { requireDateField?: boolean } = {},
+): Promise<void> {
+    const requireDateField = options.requireDateField !== false;
+    const dateFieldSel = await findSelector(page, [
+        'input#approval-request-fields-date',
+        'input[name="approval_request[target_date]"]',
+        'input[type="date"]',
+        'input[id*="date"]',
+    ], 25000);
+    if (!dateFieldSel) {
+        if (requireDateField) throw new Error('休日出勤申請の日付入力欄が見つかりませんでした。');
+    } else {
+        await page.waitForFunction((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            return Object.keys(el).some(k => k.startsWith('__reactFiber') || k.startsWith('__reactProps'));
+        }, dateFieldSel, { timeout: 10000 }).catch(() => {});
+    }
+
+    const fillAndVerifyDate = async (): Promise<void> => {
+        if (!dateFieldSel) return;
+        await page.evaluate((sel) => {
+            const el = document.querySelector(sel) as HTMLElement | null;
+            el?.scrollIntoView({ block: 'center', inline: 'nearest' });
+        }, dateFieldSel).catch(() => {});
+        const dateOk = await fillInputAndBlurReliably(page, dateFieldSel, normalizedDate, 5);
+        if (!dateOk) throw new Error(`休日出勤申請の日付入力に失敗しました: ${normalizedDate}`);
+        await page.waitForTimeout(250);
+        const actual = await page.evaluate((sel) => {
+            const el = document.querySelector(sel) as HTMLInputElement | null;
+            return el?.value || '';
+        }, dateFieldSel);
+        if (actual !== normalizedDate) {
+            throw new Error(`休日出勤申請の日付入力が保持されませんでした: expected=${normalizedDate}, actual=${actual || '(空)'}`);
+        }
+    }
+
+    const routeDisplayName = payload.routeName?.trim() || '休日出勤申請';
+    const routeInput = await page.$('input#approval-request-fields-route-id');
+    if (routeInput) {
+        const currentRouteValue = await page.$eval(
+            'input#approval-request-fields-route-id',
+            (el: HTMLInputElement) => (el.value || '').trim(),
+        ).catch(() => '');
+        const routeAlreadySelected = Boolean(currentRouteValue)
+            && (currentRouteValue === routeDisplayName
+                || currentRouteValue.includes(routeDisplayName)
+                || (currentRouteValue.length >= 8 && routeDisplayName.includes(currentRouteValue)));
+        if (routeAlreadySelected) {
+            console.log(`[RPA Holiday Work] Route already selected: "${currentRouteValue}"`);
+        } else {
+            await handleCombobox(page, 'input#approval-request-fields-route-id', routeDisplayName);
+        }
+        await closeComboboxOverlays(page, 'input#approval-request-fields-route-id');
+        await page.waitForTimeout(50);
+    } else {
+        const routeSelect = await page.$('select[name="approval_request[approval_flow_route_id]"]');
+        if (routeSelect) {
+            await selectOptionIfPresent(page, 'select[name="approval_request[approval_flow_route_id]"]', payload.routeId.toString());
+        }
+        await page.waitForTimeout(200);
+    }
+
+    // Route selection can re-render the HolidayWork form, so fill the date after the route settles.
+    await fillAndVerifyDate();
+
+    await page.waitForFunction((dateSel) => {
+        const dateEl = dateSel ? document.querySelector(dateSel) : null;
+        const candidates = Array.from(document.querySelectorAll<HTMLInputElement>('input')).filter((el) => {
+            if (el === dateEl) return false;
+            if (el.getAttribute('role') === 'combobox') return false;
+            if (['hidden', 'checkbox', 'radio', 'file', 'submit', 'button'].includes(el.type)) return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+        });
+        return candidates.length >= 2;
+    }, dateFieldSel || '', { timeout: 5000 }).catch(() => {});
+
+    const timeFieldSelectors = await page.evaluate((dateSel: string) => {
+        const dateEl = dateSel ? document.querySelector(dateSel) : null;
+        const candidates = Array.from(document.querySelectorAll<HTMLInputElement>('input'))
+            .filter((el) => {
+                if (el === dateEl) return false;
+                if (el.getAttribute('role') === 'combobox') return false;
+                if (['hidden', 'checkbox', 'radio', 'file', 'submit', 'button'].includes(el.type)) return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            })
+            .slice(0, 2);
+        candidates.forEach((el, index) => el.setAttribute('data-codex-holiday-time', String(index)));
+        return candidates.map((_, index) => `[data-codex-holiday-time="${index}"]`);
+    }, dateFieldSel || '');
+
+    const timeValues = [item.startAt, item.endAt];
+    for (let i = 0; i < Math.min(timeFieldSelectors.length, 2); i++) {
+        const ok = await fillInputAndBlurReliably(page, timeFieldSelectors[i], timeValues[i]);
+        console.log(`[RPA Holiday Work] Time[${i}] filled: ${timeValues[i]} (ok=${ok})`);
+        if (!ok) throw new Error(`休日出勤申請の勤務予定時間入力に失敗しました: ${timeValues[i]}`);
+    }
+
+    if (timeFieldSelectors.length < 2) {
+        const fallbackStart = await findSelector(page, [
+            'input#approval-request-fields-started-at',
+            'input#approval-request-fields-start-at',
+            'input[name="approval_request[start_at]"]',
+            'input[name="approval_request[started_at]"]',
+            'input[name="approval_request[start_time]"]',
+            'input[name="approval_request[scheduled_start_at]"]',
+            'input[id*="start"]',
+        ], 2000);
+        const fallbackEnd = await findSelector(page, [
+            'input#approval-request-fields-ended-at',
+            'input#approval-request-fields-end-at',
+            'input[name="approval_request[end_at]"]',
+            'input[name="approval_request[ended_at]"]',
+            'input[name="approval_request[end_time]"]',
+            'input[name="approval_request[scheduled_end_at]"]',
+            'input[id*="end"]',
+        ], 2000);
+        if (fallbackStart) {
+            const ok = await fillInputAndBlurReliably(page, fallbackStart, item.startAt);
+            if (!ok) throw new Error(`休日出勤申請の開始時刻入力に失敗しました: ${item.startAt}`);
+        }
+        if (fallbackEnd) {
+            const ok = await fillInputAndBlurReliably(page, fallbackEnd, item.endAt);
+            if (!ok) throw new Error(`休日出勤申請の終了時刻入力に失敗しました: ${item.endAt}`);
+        }
+    }
+
+    const reasonSel = await findSelector(page, [
+        '[data-test="申請理由"]',
+        '[data-testid="申請理由"]',
+        'input[name="approval_request[comment]"]',
+        'textarea[name="approval_request[comment]"]',
+        'input[id*="comment"]',
+        'textarea[id*="comment"]',
+        'input[id*="reason"]',
+        'textarea[id*="reason"]',
+        'input[placeholder*="理由"]',
+        'textarea[placeholder*="理由"]',
+        'textarea',
+    ], 5000) || await page.evaluate((dateSel: string) => {
+        const dateEl = dateSel ? document.querySelector(dateSel) : null;
+        const timeEls = new Set(
+            Array.from(document.querySelectorAll('[data-codex-holiday-time]')),
+        );
+        const candidates = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('textarea, input'))
+            .filter((el) => {
+                if (el === dateEl || timeEls.has(el)) return false;
+                if (el instanceof HTMLInputElement && el.getAttribute('role') === 'combobox') return false;
+                if (el instanceof HTMLInputElement && ['hidden', 'checkbox', 'radio', 'file', 'submit', 'button'].includes(el.type)) return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            });
+        const preferred = candidates.find((el) => {
+            const text = `${el.id || ''} ${el.getAttribute('name') || ''} ${el.getAttribute('placeholder') || ''}`.toLowerCase();
+            return text.includes('comment') || text.includes('reason') || text.includes('message');
+        }) || candidates[0];
+        if (!preferred) return null;
+        preferred.setAttribute('data-codex-holiday-reason', '1');
+        return '[data-codex-holiday-reason="1"]';
+    }, dateFieldSel || '').catch(() => null);
+    if (reasonSel && payload.comment) {
+        const ok = await fillInputAndBlurReliably(page, reasonSel, payload.comment);
+        if (!ok) throw new Error('休日出勤申請の申請理由入力に失敗しました。');
+    }
+
+    if (payload.departmentId || payload.departmentName) {
+        const deptDisplayName = payload.departmentName?.trim();
+        const deptInput = await page.$('input#approval-request-fields-group-id');
+        if (deptInput && deptDisplayName) {
+            await handleCombobox(page, 'input#approval-request-fields-group-id', deptDisplayName);
+        } else if (payload.departmentId) {
+            const deptSelect = await page.$('select[name="approval_request[department_id]"]');
+            if (deptSelect) {
+                await selectOptionIfPresent(page, 'select[name="approval_request[department_id]"]', payload.departmentId.toString());
+            } else {
+                console.log('[RPA Holiday Work] Department field not found; skipped.');
+            }
+        }
+    }
+
+    // A final pass keeps the date stable even if another combobox caused a late re-render.
+    await fillAndVerifyDate();
+}
+
+async function submitHolidayWorkForm(page: Page): Promise<void> {
+    const beforeUrl = page.url();
+    await closeComboboxOverlays(page);
+    await page.waitForTimeout(50);
+    await page.evaluate(() => {
+        const root = document.scrollingElement || document.documentElement;
+        root.scrollTop = root.scrollHeight;
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+            if (el.scrollHeight > el.clientHeight + 20) el.scrollTop = el.scrollHeight;
+        }
+    }).catch(() => {});
+
+    const submitHandle = await page.waitForFunction(() => {
+        const root = document.scrollingElement || document.documentElement;
+        root.scrollTop = root.scrollHeight;
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+            if (el.scrollHeight > el.clientHeight + 20) el.scrollTop = el.scrollHeight;
+        }
+        const isDisabled = (button: HTMLButtonElement) =>
+            button.disabled ||
+            button.getAttribute('aria-disabled') === 'true' ||
+            button.className.toString().includes('disabled');
+        const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button[type="submit"], button'));
+        const submit = buttons.find((button) => {
+            const text = (button.textContent || '').trim();
+            return text === '申請' || text.includes('申請');
+        });
+        if (!submit || isDisabled(submit)) return null;
+        submit.scrollIntoView({ block: 'center', inline: 'nearest' });
+        return submit;
+    }, undefined, { timeout: 6000 }).catch(() => null);
+    const submitElement = submitHandle?.asElement();
+    if (!submitElement) {
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+        throw new Error('休日出勤申請の送信ボタンが有効になりませんでした。対象日・勤務予定時間・申請理由・申請経路を確認してください。');
+    }
+
+    await page.waitForTimeout(100);
+    await submitElement.evaluate((el: HTMLElement) => el.click());
+    await page.waitForTimeout(2000);
+
+    const result = await Promise.race([
+        page.waitForSelector('button:has-text("申請を取り下げる")', { state: 'visible', timeout: 15000 }).then(() => 'withdraw' as const).catch(() => null),
+        page.waitForFunction((prevUrl) => window.location.href !== prevUrl && !window.location.href.includes('/new'), beforeUrl, { timeout: 15000 }).then(() => 'url_changed' as const).catch(() => null),
+        page.waitForSelector('.vb-messageBlock__inner--alert, .vb-flash--error, [role="alert"]', { state: 'visible', timeout: 15000 }).then(() => 'error' as const).catch(() => null),
+    ]);
+
+    const errText = await page.evaluate(() => {
+        for (const sel of ['.vb-messageBlock__inner--alert .vb-messageBlockInternalMessage__content', '.vb-message__content', '.vb-flash--error', '[role="alert"]']) {
+            const el = document.querySelector(sel);
+            if (el?.textContent?.trim()) return el.textContent.trim();
+        }
+        return null;
+    }).catch(() => null);
+
+    if (result === 'error' || (errText && (errText.includes('エラー') || errText.includes('失敗') || errText.includes('できません')))) {
+        throw new Error(errText || '休日出勤申請でエラーが発生しました。');
+    }
+    if (result === null) {
+        throw new Error('休日出勤申請の成功を確認できませんでした（15秒タイムアウト）。');
+    }
+}
+
+export async function submitHolidayWorkBatchViaBrowser(payload: HolidayWorkBatchPayload): Promise<BatchSubmitResult> {
+    const { email, password, items, onProgress } = payload;
+    const total = items.length;
+    const failed: Array<{ date: string; error: string }> = [];
+    let succeeded = 0;
+
+    if (total === 0) return { total: 0, succeeded: 0, failed: [] };
+
+    const savedSession = loadSessionState();
+    const browser = await chromium.launch({
+        channel: 'msedge',
+        headless: payload.headless !== false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    }).catch(() => chromium.launch({
+        channel: 'chrome',
+        headless: payload.headless !== false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    }));
+
+    const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ...(savedSession ? { storageState: savedSession as any } : {})
+    });
+    const page = await context.newPage();
+    await page.route('**/*', (route) => {
+        if (['image', 'media', 'font'].includes(route.request().resourceType())) route.abort();
+        else route.continue();
+    });
+
+    try {
+        await doLogin(page, context, email, password, savedSession);
+        await saveSessionState(context);
+
+        const directUrl = 'https://p.secure.freee.co.jp/approval_requests#/requests/new?type=ApprovalRequest::HolidayWork';
+
+        for (let i = 0; i < total; i++) {
+            const item = items[i];
+            const normalizedDate = item.targetDate.includes('-') && item.targetDate.length >= 10
+                ? item.targetDate.slice(0, 10)
+                : item.targetDate.replace(/\//g, '-').slice(0, 10);
+
+            try {
+                if (page.url().includes('accounts.secure.freee.co.jp') || page.url().includes('login')) {
+                    await doLogin(page, context, email, password, null);
+                    await saveSessionState(context);
+                }
+
+                const holidayWorkUrl = `${directUrl}&_t=${Date.now()}`;
+                await gotoApprovalRequestForm(page, holidayWorkUrl);
+                if (page.url().includes('accounts.secure.freee.co.jp') || page.url().includes('login')) {
+                    await doLogin(page, context, email, password, null);
+                    await saveSessionState(context);
+                    await gotoApprovalRequestForm(page, holidayWorkUrl);
+                }
+                await fillHolidayWorkRequestForm(page, payload, item, normalizedDate, { requireDateField: true });
+
+                await submitHolidayWorkForm(page);
+                succeeded++;
+                onProgress?.({ current: i + 1, total, date: normalizedDate, success: true });
+            } catch (e: any) {
+                const msg = e?.message || '不明なエラー';
+                console.error(`[RPA Holiday Work] [${i + 1}/${total}] FAILED: ${item.targetDate} - ${msg}`);
+                failed.push({ date: item.targetDate, error: msg });
+                onProgress?.({ current: i + 1, total, date: item.targetDate, success: false, error: msg });
+            }
+        }
+
+        return { total, succeeded, failed };
+    } finally {
         await browser.close();
     }
 }

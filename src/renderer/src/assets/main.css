@@ -139,6 +139,17 @@
   background-color: #006669 !important;
 }
 
+.react-datepicker__day--multi-selected {
+  background-color: var(--color-primary) !important;
+  color: white !important;
+  border-radius: 50% !important;
+  font-weight: 700 !important;
+}
+
+.react-datepicker__day--multi-selected:hover {
+  background-color: #006669 !important;
+}
+
 /* Days in range (between start and end) */
 .react-datepicker__day--in-range,
 .react-datepicker__day--in-selecting-range {

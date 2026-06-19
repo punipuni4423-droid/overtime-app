@@ -6,14 +6,18 @@ import { Approvals } from './components/Approvals'
 import { Settings } from './components/Settings'
 import { MonthlyClose } from './components/MonthlyClose'
 import { ManagerOvertime } from './components/ManagerOvertime'
+import { WorkTimeCorrection } from './components/WorkTimeCorrection'
+import { HolidayWork } from './components/HolidayWork'
 // import { TimeClock } from './components/TimeClock'  // v1.0.8 以降で有効化
 
-type MainView = 'overtime' | 'paid-leave' | 'monthly-close' | 'approvals'
+type MainView = 'overtime' | 'paid-leave' | 'holiday-work' | 'work-time-correction' | 'monthly-close' | 'approvals'
 type AppView = MainView | 'manager-overtime'
 
 const TAB_LABELS: Record<MainView, string> = {
   'overtime': '残業申請',
   'paid-leave': '有給申請',
+  'holiday-work': '休日出勤申請',
+  'work-time-correction': '勤怠時間修正',
   'monthly-close': '月次締め',
   'approvals': '申請・承認',
 }
@@ -245,7 +249,7 @@ function App() {
                   {notificationTone === 'error'
                     ? '自動承認の確認が必要です'
                     : notificationTone === 'warning'
-                      ? '時間外労働の許可が必要です'
+                      ? '残業合計の許可が必要です'
                       : '自動承認が完了しました'}
                 </div>
                 <div
@@ -260,7 +264,7 @@ function App() {
                   {notificationTone === 'error'
                     ? '承認経路が一致しない申請があります。'
                     : notificationTone === 'warning'
-                      ? '通知対象の時間外労働を超過している申請は、許可した場合のみ承認します。'
+                      ? '通知対象の残業合計を超過している申請は、許可した場合のみ承認します。'
                       : '承認した申請の詳細を確認してください。'}
                 </div>
               </div>
@@ -338,8 +342,8 @@ function App() {
                                       <div>申請日: {formatNoticeDate(item.issueDate)}</div>
                                       <div className="sm:col-span-2">申請経路: {item.routeName || item.routeId || '未設定'}</div>
                                       <div className="sm:col-span-2 font-semibold text-amber-800">
-                                        時間外労働:{' '}
-                                        {item.overtimeText || formatNoticeMinutes(item.overtimeMins ?? item.totalOvertimeMins)}
+                                        残業合計:{' '}
+                                        {item.totalOvertimeText || item.overtimeText || formatNoticeMinutes(item.totalOvertimeMins ?? item.overtimeMins)}
                                         {item.thresholdHours ? ` / ${item.thresholdHours}時間超過` : ''}
                                       </div>
                                       <div className="sm:col-span-2">コメント: {item.comment || '—'}</div>
@@ -437,6 +441,8 @@ function App() {
       <div className="flex-1 overflow-hidden">
         {view === 'overtime' && <Dashboard />}
         {view === 'paid-leave' && <PaidLeave />}
+        {view === 'holiday-work' && <HolidayWork />}
+        {view === 'work-time-correction' && <WorkTimeCorrection />}
         {view === 'monthly-close' && <MonthlyClose />}
         {view === 'approvals' && <Approvals />}
         {view === 'manager-overtime' && <ManagerOvertime />}
