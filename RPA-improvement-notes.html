@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>freee 残業申請 RPA 改善メモ（対象日入力欄エラー対応）</title>
+  <style>
+    :root { color-scheme: light; --fg: #172033; --muted: #5d667a; --line: #d8dee9; --accent: #008c8c; --bg: #f6f8fb; --paper: #ffffff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; line-height: 1.75; }
+    main { max-width: 1040px; margin: 0 auto; padding: 28px 24px 56px; }
+    article { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 28px; box-shadow: 0 2px 8px rgba(23, 32, 51, 0.06); }
+    h1 { margin: 0 0 20px; padding-bottom: 14px; border-bottom: 2px solid var(--accent); font-size: 30px; line-height: 1.35; }
+    h2 { margin: 34px 0 12px; font-size: 22px; border-left: 5px solid var(--accent); padding-left: 10px; line-height: 1.4; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p, ul, ol { margin: 10px 0; }
+    li { margin: 4px 0; }
+    a { color: #006fbd; }
+    code { background: #eef3f7; border: 1px solid #dce5ee; border-radius: 4px; padding: 1px 5px; font-family: Consolas, "Courier New", monospace; font-size: 0.95em; }
+    pre { background: #111827; color: #f9fafb; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+    pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+    figure { margin: 18px 0 28px; }
+    figure img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px rgba(23, 32, 51, 0.12); }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    @media (max-width: 720px) { main { padding: 16px 12px 36px; } article { padding: 20px 16px; } h1 { font-size: 24px; } h2 { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+<h1>freee 残業申請 RPA 改善メモ（対象日入力欄エラー対応）</h1>
+<h2>原因</h2>
+<ul>
+<li><strong>遷移先URLの不一致</strong></li>
+<li>これまで: <code>https://secure.freee.co.jp/hr/businesses/{companyId}/approval_requests/overtime_works/new</code></li>
+<li>この画面には <code>input#approval-request-fields-date</code> がなく、別レイアウト（radix のドロップダウン等のみ）だった。</li>
+<li>対象日入力欄があるのは <strong>p.secure.freee.co.jp</strong> の申請画面（Vibe UI）。</li>
+</ul>
+<h2>実施した修正（automation.ts）</h2>
+<h3>1. 残業申請ページのURLを Vibe UI に変更</h3>
+<ul>
+<li><strong>第一候補</strong>: <code>https://p.secure.freee.co.jp/approval_requests#/requests/new?type=ApprovalRequest::OvertimeWork</code></li>
+<li>ここに <code>input#approval-request-fields-date</code> があるフォームが表示される。</li>
+<li>上記で開けない場合の <strong>フォールバック</strong>: 従来の <code>secure.freee.co.jp/.../overtime_works/new</code> をそのまま利用。</li>
+</ul>
+<h3>2. SPA 描画待ちの追加</h3>
+<ul>
+<li><code>goto</code> 後に <code>waitForTimeout(2000)</code> を追加し、Vibe UI のフォームが描画されるまで待機。</li>
+<li>対象日フィールドの待機時間を <strong>3秒 → 15秒</strong>（<code>formWaitTimeout</code>）に延長。</li>
+</ul>
+<h3>3. 対象日の形式を YYYY-MM-DD に統一</h3>
+<ul>
+<li><code>payload.targetDate</code> を <strong>YYYY-MM-DD</strong>（例: <code>2026-03-13</code>）に正規化してから入力。</li>
+<li>スラッシュ区切りが渡っても <code>-</code> に変換し、先頭10文字のみ使用。</li>
+</ul>
+<h3>4. 申請ボタンのセレクタを Vibe UI に対応</h3>
+<ul>
+<li>文言が「申請する」ではなく「<strong>申請</strong>」のボタンに対応。</li>
+<li>例: <code>button.vb-button--appearancePrimary:has-text(&quot;申請&quot;)</code> を追加。</li>
+</ul>
+<h3>5. 成功判定の見直し</h3>
+<ul>
+<li>p.secure の <code>approval_requests</code> 系URLでも申請完了と判定できるように条件を追加。</li>
+</ul>
+<p>---</p>
+<h2>運用上の注意</h2>
+<ul>
+<li><strong>対象日（targetDate）</strong> は、呼び出し元で <strong>YYYY-MM-DD</strong>（例: <code>2026-03-13</code>）で渡すことを推奨。</li>
+<li>ログイン後のリダイレクト先が <code>p.secure.freee.co.jp</code> でない環境では、従来の <code>secure.freee.co.jp</code> のURLにフォールバックする。</li>
+<li>freee の画面変更で id や class が変わった場合は、<code>automation.ts</code> のセレクタを実画面に合わせて再確認すること。</li>
+</ul>
+    </article>
+  </main>
+</body>
+</html>
