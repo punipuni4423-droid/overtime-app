@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>freee申請ツール スタートアップ手順書</title>
+  <style>
+    :root { color-scheme: light; --fg: #172033; --muted: #5d667a; --line: #d8dee9; --accent: #008c8c; --bg: #f6f8fb; --paper: #ffffff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; line-height: 1.75; }
+    .page { max-width: 1040px; margin: 0 auto; padding: 28px 24px 56px; }
+    nav { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    nav a { color: #006f74; text-decoration: none; border: 1px solid var(--line); background: var(--paper); border-radius: 6px; padding: 6px 12px; font-size: 14px; }
+    main { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 28px; box-shadow: 0 2px 8px rgba(23, 32, 51, 0.06); }
+    h1 { margin: 0 0 20px; padding-bottom: 14px; border-bottom: 2px solid var(--accent); font-size: 30px; line-height: 1.35; }
+    h2 { margin: 34px 0 12px; font-size: 22px; border-left: 5px solid var(--accent); padding-left: 10px; line-height: 1.4; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p, ul, ol { margin: 10px 0; }
+    li { margin: 4px 0; }
+    a { color: #006fbd; }
+    code { background: #eef3f7; border: 1px solid #dce5ee; border-radius: 4px; padding: 1px 5px; font-family: Consolas, "Courier New", monospace; font-size: 0.95em; }
+    pre { background: #111827; color: #f9fafb; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+    pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+    figure { margin: 18px 0 28px; }
+    figure img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px rgba(23, 32, 51, 0.12); }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    @media (max-width: 720px) { .page { padding: 16px 12px 36px; } main { padding: 20px 16px; } h1 { font-size: 24px; } h2 { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav aria-label="?????????????">
+      <a href="./README.html">???????</a>
+      <a href="./USER_MANUAL.html">?????????</a>
+      <a href="./STARTUP_GUIDE.html">??????????</a>
+    </nav>
+    <main>
+<h1>freee申請ツール スタートアップ手順書</h1>
+<p>対象バージョン: 1.0.13</p>
+<h2>1. 利用前に準備するもの</h2>
+<p>必要なもの:</p>
+<ul>
+<li>Windows 10 / Windows 11 のPC</li>
+<li>インターネット接続</li>
+<li>freee人事労務にログインできるアカウント</li>
+<li>freee APIのOAuthアプリ情報</li>
+<li>Client ID</li>
+<li>Client Secret</li>
+<li>Microsoft Edge または Google Chrome</li>
+</ul>
+<p>通常利用では、Node.jsや開発ツールのインストールは不要です。</p>
+<p>Web自動操作を使う機能では、PCにMicrosoft EdgeまたはGoogle Chromeが必要です。EdgeはWindows標準で入っていることが多いため、通常は追加インストール不要です。</p>
+<h2>2. インストール方法</h2>
+<h3>インストーラー版</h3>
+<ol>
+<li>GitHub Releaseから <code>overtime-app_Setup_1.0.13.exe</code> をダウンロードします。</li>
+<li>ダウンロードしたexeを実行します。</li>
+<li>画面の案内に従ってインストールします。</li>
+<li>インストール後、アプリを起動します。</li>
+</ol>
+<h3>配布用ZIP版</h3>
+<ol>
+<li>配布用ZIPをダウンロードします。</li>
+<li>任意のフォルダに展開します。</li>
+<li>展開したフォルダ内の <code>残業申請ツール.exe</code> を実行します。</li>
+</ol>
+<p>ZIP版はインストールせずに実行できます。社内共有フォルダなどで配布する場合に利用してください。</p>
+<h2>3. 初回設定</h2>
+<p>アプリ起動後、右上の歯車アイコンから設定画面を開きます。</p>
+<figure><img src="./images/08-settings.png" alt="設定" loading="lazy"><figcaption>設定</figcaption></figure>
+<h3>OAuth2認証情報</h3>
+<ol>
+<li><code>Client ID</code> を入力します。</li>
+<li><code>Client Secret</code> を入力します。</li>
+<li><code>設定を保存</code> を押します。</li>
+<li>OAuth認証ボタンを押し、ブラウザでfreeeへログインして認可します。</li>
+<li>認証後、Company ID / User ID / Employee ID が自動取得されます。</li>
+</ol>
+<h3>デフォルト部門</h3>
+<p>部門指定が必要な申請経路を使う場合は、<code>デフォルト部門</code> を選択してください。</p>
+<p>部門・役職ベースの承認経路では、API申請が制限される場合があります。その場合、アプリはWeb版freeeの自動操作に切り替えて申請します。</p>
+<h3>Web版自動操作用ログイン情報</h3>
+<p>一部の申請や承認操作では、freeeのWeb画面を自動操作します。</p>
+<ol>
+<li>freeeログイン用のメールアドレスを入力します。</li>
+<li>パスワードを入力します。</li>
+<li><code>ログイン確認</code> を押します。</li>
+<li><code>ログイン確認済み</code> と表示されることを確認します。</li>
+</ol>
+<p>ログイン確認が未完了の場合、Web操作が必要な申請・承認ボタンは押せません。</p>
+<h2>4. 起動確認</h2>
+<ol>
+<li>アプリ上部の <code>残業申請</code> タブを開きます。</li>
+<li>申請経路が表示されることを確認します。</li>
+<li><code>申請・承認</code> タブを開き、申請一覧を取得できることを確認します。</li>
+<li>Manager権限がある場合は、<code>残業状況</code> タブで対象月を選択して取得できることを確認します。</li>
+</ol>
+<h2>5. 自動承認を使う場合</h2>
+<p>自動承認はWindowsのタスクスケジューラーを使用します。</p>
+<p>確認すること:</p>
+<ul>
+<li>PCが起動していること</li>
+<li>Windowsタスクスケジューラーが利用できること</li>
+<li>アプリの設定でWebログイン確認が完了していること</li>
+<li><code>申請・承認</code> タブで自動承認の時間と経路が設定されていること</li>
+</ul>
+<p>自動承認設定を保存すると、タスクスケジューラーの存在と有効状態を確認します。タスクがない場合は作成されます。</p>
+<h2>6. よくあるトラブル</h2>
+<h3>申請経路が表示されない</h3>
+<ul>
+<li>OAuth認証が完了しているか確認してください。</li>
+<li>Client ID / Client Secret が正しいか確認してください。</li>
+<li>freeeアカウントに対象会社の権限があるか確認してください。</li>
+</ul>
+<h3>Web経由申請に切り替わる</h3>
+<p>部門・役職ベースの承認経路など、freee APIで申請できない条件の場合に発生します。</p>
+<ul>
+<li>設定画面でメールアドレス・パスワードを入力してください。</li>
+<li><code>ログイン確認</code> を完了してください。</li>
+<li>EdgeまたはChromeが利用できる状態か確認してください。</li>
+</ul>
+<h3>休日出勤で平日が選べない</h3>
+<p>仕様です。休日出勤申請は土日祝日のみ選択できます。</p>
+<h3>有給申請で土日祝日が除外される</h3>
+<p>仕様です。有給申請は営業日を対象とするため、土日祝日は除外されます。</p>
+<h3>残業状況が取得できない</h3>
+<ul>
+<li>Manager権限があるか確認してください。</li>
+<li>freee側で他メンバーの月次勤怠集計を閲覧できる権限が必要です。</li>
+<li>OAuth認証が有効か確認してください。</li>
+</ul>
+<h2>7. 更新方法</h2>
+<p>インストーラー版:</p>
+<ol>
+<li>新しい <code>overtime-app_Setup_X.Y.Z.exe</code> をダウンロードします。</li>
+<li>実行して上書きインストールします。</li>
+</ol>
+<p>ZIP版:</p>
+<ol>
+<li>新しい配布用ZIPをダウンロードします。</li>
+<li>古いフォルダとは別の場所へ展開します。</li>
+<li>必要に応じてショートカットを差し替えます。</li>
+</ol>
+<p>設定情報はユーザー環境に保存されるため、通常は再入力不要です。</p>
+    </main>
+  </div>
+</body>
+</html>

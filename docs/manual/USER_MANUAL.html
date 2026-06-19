@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>freee申請ツール ユーザーマニュアル</title>
+  <style>
+    :root { color-scheme: light; --fg: #172033; --muted: #5d667a; --line: #d8dee9; --accent: #008c8c; --bg: #f6f8fb; --paper: #ffffff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; line-height: 1.75; }
+    .page { max-width: 1040px; margin: 0 auto; padding: 28px 24px 56px; }
+    nav { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+    nav a { color: #006f74; text-decoration: none; border: 1px solid var(--line); background: var(--paper); border-radius: 6px; padding: 6px 12px; font-size: 14px; }
+    main { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 28px; box-shadow: 0 2px 8px rgba(23, 32, 51, 0.06); }
+    h1 { margin: 0 0 20px; padding-bottom: 14px; border-bottom: 2px solid var(--accent); font-size: 30px; line-height: 1.35; }
+    h2 { margin: 34px 0 12px; font-size: 22px; border-left: 5px solid var(--accent); padding-left: 10px; line-height: 1.4; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p, ul, ol { margin: 10px 0; }
+    li { margin: 4px 0; }
+    a { color: #006fbd; }
+    code { background: #eef3f7; border: 1px solid #dce5ee; border-radius: 4px; padding: 1px 5px; font-family: Consolas, "Courier New", monospace; font-size: 0.95em; }
+    pre { background: #111827; color: #f9fafb; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+    pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+    figure { margin: 18px 0 28px; }
+    figure img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px rgba(23, 32, 51, 0.12); }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    @media (max-width: 720px) { .page { padding: 16px 12px 36px; } main { padding: 20px 16px; } h1 { font-size: 24px; } h2 { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav aria-label="?????????????">
+      <a href="./README.html">???????</a>
+      <a href="./USER_MANUAL.html">?????????</a>
+      <a href="./STARTUP_GUIDE.html">??????????</a>
+    </nav>
+    <main>
+<h1>freee申請ツール ユーザーマニュアル</h1>
+<p>対象バージョン: 1.0.13</p>
+<p>このツールは、freee人事労務の残業申請、有給申請、休日出勤申請、勤怠時間修正、月次締め、申請承認、残業状況確認をまとめて行うためのデスクトップアプリです。</p>
+<h2>共通操作</h2>
+<ul>
+<li>画面上部のタブで機能を切り替えます。</li>
+<li>右上の歯車アイコンから設定画面を開きます。</li>
+<li>申請経路はfreee側の承認経路を取得して表示します。</li>
+<li>APIで申請できるものはAPIで送信します。API制限がある経路や項目は、Web版freeeをバックグラウンドで操作して申請します。</li>
+<li>期間指定は開始日から終了日までをまとめて申請します。</li>
+<li>複数日指定はカレンダー上の日付をクリックして追加・解除します。</li>
+</ul>
+<h2>残業申請</h2>
+<figure><img src="./images/01-overtime.png" alt="残業申請" loading="lazy"><figcaption>残業申請</figcaption></figure>
+<p>残業申請タブでは、対象日、開始時間、終了時間、申請理由、申請経路を指定して残業申請を送信します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>申請対象日</code>: 単日、期間指定、複数日指定を切り替えられます。</li>
+<li><code>開始時間</code> / <code>終了時間</code>: 30分単位で選択できます。日付をまたぐ時間も選択できます。</li>
+<li><code>申請理由</code>: freeeへ送信するコメントです。必須です。</li>
+<li><code>申請経路</code>: freeeの承認経路です。前回選択した経路を保持します。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>経路が部門・役職ベースの場合は、APIではなくWeb経由で申請します。</li>
+<li>期間指定・複数日指定を使う場合は、同じ開始時間・終了時間・理由・経路で各日付に申請します。</li>
+<li>残業申請では土日祝日を除外するかどうかを選べます。</li>
+</ul>
+<h2>有給申請</h2>
+<figure><img src="./images/02-paid-leave.png" alt="有給申請" loading="lazy"><figcaption>有給申請</figcaption></figure>
+<p>有給申請タブでは、有給の対象日と取得区分を指定して申請します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>申請対象日</code>: 単日、期間指定、複数日指定を切り替えられます。</li>
+<li><code>取得区分</code>: 全休、午前休、午後休を選択します。</li>
+<li><code>申請理由</code>: 必要に応じて入力します。</li>
+<li><code>申請経路</code>: freeeの承認経路です。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>有給申請は土日祝日を除外して扱います。</li>
+<li>期間指定の場合も、営業日だけを対象にします。</li>
+<li>部門・役職ベースの経路ではWeb経由で申請する場合があります。</li>
+</ul>
+<h2>休日出勤申請</h2>
+<figure><img src="./images/03-holiday-work.png" alt="休日出勤申請" loading="lazy"><figcaption>休日出勤申請</figcaption></figure>
+<p>休日出勤申請タブでは、土日祝日の勤務予定を申請します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>申請対象日</code>: 土日祝日のみ選択できます。</li>
+<li><code>期間で指定</code>: 休日だけを抽出してまとめて申請します。</li>
+<li><code>複数日指定</code>: カレンダー上で休日をクリックして追加・解除します。</li>
+<li><code>勤務予定時間</code>: 休日出勤予定の開始・終了時間です。</li>
+<li><code>申請理由</code>: 必須です。</li>
+<li><code>申請経路</code>: 休日出勤用の承認経路を選択します。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>平日は選択できません。</li>
+<li>複数日指定では、カレンダーでクリックした日付がその場で選択状態になります。もう一度クリックすると解除されます。</li>
+<li>休日出勤申請はAPIで送れる場合はAPIを使い、必要に応じてWeb経由に切り替えます。</li>
+</ul>
+<h2>勤怠時間修正</h2>
+<figure><img src="./images/04-work-time-correction.png" alt="勤怠時間修正" loading="lazy"><figcaption>勤怠時間修正</figcaption></figure>
+<p>勤怠時間修正タブでは、対象日の出勤・退勤時刻、休憩時間、遅刻・早退時間を申請します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>申請対象日</code>: 修正したい日付です。</li>
+<li><code>修正後の勤務時間</code>: 出勤時刻と退勤時刻です。</li>
+<li><code>休憩時間</code>: 休憩の開始・終了を入力します。追加・削除できます。</li>
+<li><code>遅刻分</code> / <code>早退分</code>: 必要な場合だけ分単位で入力します。</li>
+<li><code>申請理由</code>: 必須です。</li>
+<li><code>申請経路</code>: 勤怠修正用の承認経路を選択します。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>入力した勤務時間と休憩時間がfreeeへ送信されます。</li>
+<li>自動承認設定の対象にする場合は、申請・承認タブの自動承認設定で経路を許可してください。</li>
+</ul>
+<h2>月次締め</h2>
+<figure><img src="./images/05-monthly-close.png" alt="月次締め" loading="lazy"><figcaption>月次締め</figcaption></figure>
+<p>月次締めタブでは、対象月の勤怠締め申請を送信します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>対象月</code>: 締め申請する月です。</li>
+<li><code>コメント</code>: 必要に応じて入力します。</li>
+<li><code>申請経路</code>: 月次締め用の承認経路を選択します。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>月次締め申請は、締め日付近の申請可能期間だけ送信できます。</li>
+<li>APIで送信できない経路はWeb経由で申請します。</li>
+</ul>
+<h2>申請・承認</h2>
+<figure><img src="./images/06-approvals.png" alt="申請・承認" loading="lazy"><figcaption>申請・承認</figcaption></figure>
+<p>申請・承認タブでは、自分が承認する申請と、自分が出した申請を確認・操作します。</p>
+<p>上部フィルター:</p>
+<ul>
+<li><code>承認待ち</code>: 承認対象の申請を表示します。</li>
+<li><code>承認済み</code>: 承認済みの申請を表示します。</li>
+<li><code>自分が承認者</code>: 自分が承認者として関係する申請を表示します。</li>
+<li><code>差戻し</code>: 差戻し済みの申請を表示します。</li>
+</ul>
+<p>申請種別タブ:</p>
+<ul>
+<li><code>残業申請</code></li>
+<li><code>有給申請</code></li>
+<li><code>休日出勤申請</code></li>
+<li><code>勤怠時間修正</code></li>
+<li><code>月次締め</code></li>
+</ul>
+<p>できること:</p>
+<ul>
+<li>申請内容の確認</li>
+<li>一括承認</li>
+<li>一括差戻し</li>
+<li>自分が出した申請の取り下げ・削除</li>
+<li>自動承認の時間設定</li>
+<li>自動承認の経路設定</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>一括承認・差戻しはfreee Web画面の自動操作を使う場合があります。</li>
+<li>Web操作が必要な機能を使う前に、設定画面でメールアドレス・パスワードを入力し、ログイン確認を完了してください。</li>
+<li>自分の申請の一括削除は、APIで処理できるものを優先し、必要なものだけWeb操作へ切り替えます。</li>
+</ul>
+<h2>残業状況</h2>
+<figure><img src="./images/07-manager-overtime.png" alt="残業状況" loading="lazy"><figcaption>残業状況</figcaption></figure>
+<p>残業状況タブでは、Manager権限で取得できるメンバーの月次勤怠集計を確認します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>対象月</code>: 表示する勤怠月です。</li>
+<li><code>通知する残業合計</code>: 通知対象とする残業時間のしきい値です。</li>
+<li><code>表示対象</code>: 全員表示、またはしきい値超過者のみ表示します。</li>
+<li><code>従業員一覧</code>: 法定内残業、時間外労働、法定休日労働、深夜労働、残業合計などを表示します。</li>
+</ul>
+<p>残業合計の考え方:</p>
+<ul>
+<li><code>時間外労働 + 法定休日労働 + 深夜労働</code> を残業合計として表示します。</li>
+<li>法定内残業は残業合計には含めません。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>Manager権限がない場合、このタブは表示されない、またはデータ取得できない場合があります。</li>
+<li>チェックボックスの切り替えだけでは再取得せず、表示済みデータをもとに絞り込みます。</li>
+<li>月を変更した場合やタブを開き直した場合に最新データを取得します。</li>
+</ul>
+<h2>設定</h2>
+<figure><img src="./images/08-settings.png" alt="設定" loading="lazy"><figcaption>設定</figcaption></figure>
+<p>設定画面では、freee API認証、Web自動操作用ログイン情報、デフォルト部門、ID名マッピングなどを設定します。</p>
+<p>主な項目:</p>
+<ul>
+<li><code>OAuth2 認証情報</code>: freee APIで利用するClient ID / Client Secretです。</li>
+<li><code>認証状態</code>: OAuth認証の状態とアクセストークン有効期限を確認します。</li>
+<li><code>アカウント情報</code>: Company ID、User ID、Employee IDを表示します。OAuth認証後に自動取得されます。</li>
+<li><code>デフォルト部門</code>: 部門指定が必要な申請で使用します。</li>
+<li><code>Web版自動操作用ログイン情報</code>: API非対応の申請や承認操作で使います。</li>
+<li><code>ログイン確認</code>: Web操作用ログイン情報でfreeeへログインできるか確認します。</li>
+<li><code>ID→名前マッピング</code>: APIで名前が取れないユーザーIDを表示名に置き換えます。</li>
+</ul>
+<p>注意事項:</p>
+<ul>
+<li>Client Secret、パスワード、メールアドレスは慎重に管理してください。</li>
+<li>Web操作を使う申請・承認では、ログイン確認済みである必要があります。</li>
+<li>設定を変更したら、右上の <code>設定を保存</code> を押してください。</li>
+</ul>
+    </main>
+  </div>
+</body>
+</html>

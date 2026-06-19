@@ -1,42 +1,32 @@
-# overtime-app
+# freee申請ツール
 
-An Electron application with React and TypeScript
+freee人事労務の申請作業を補助する Electron / React 製のデスクトップアプリです。
 
-## Project Notes
+## ドキュメント
 
-- Current status and previous chat handoff: [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)
-- Update and release workflow: [docs/UPDATE_WORKFLOW.md](docs/UPDATE_WORKFLOW.md)
-- User manual: [docs/manual/USER_MANUAL.md](docs/manual/USER_MANUAL.md)
-- Startup guide: [docs/manual/STARTUP_GUIDE.md](docs/manual/STARTUP_GUIDE.md)
-- Quick launch instructions: [CLAUDE-残業ツール起動指示.md](CLAUDE-残業ツール起動指示.md)
+- ユーザーマニュアル: [docs/manual/USER_MANUAL.html](docs/manual/USER_MANUAL.html)
+- スタートアップ手順書: [docs/manual/STARTUP_GUIDE.html](docs/manual/STARTUP_GUIDE.html)
 
-## Recommended IDE Setup
+配布用マニュアルは `docs/manual` 配下の HTML ファイルを更新してください。
 
-- [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+## 開発環境
 
-## Project Setup
+推奨エディタは VS Code です。ESLint と Prettier の拡張機能を入れておくと、コード確認と整形がしやすくなります。
 
-### Install
+## セットアップ
 
 ```bash
-$ npm install
+npm install
 ```
 
-### Development
+## 開発起動
 
 ```bash
-$ npm run dev
+npm run dev
 ```
 
-### Build
+## ビルド
 
 ```bash
-# For windows
-$ npm run build:win
-
-# For macOS
-$ npm run build:mac
-
-# For Linux
-$ npm run build:linux
+npm run build:win
 ```
