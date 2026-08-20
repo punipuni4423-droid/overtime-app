@@ -1,0 +1,11 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+.env
+rpa_debug_*.png
+debug_*.png
+test_*.mjs
+cleanup_*.mjs

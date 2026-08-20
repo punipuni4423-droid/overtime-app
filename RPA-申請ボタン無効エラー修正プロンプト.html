@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RPA 申請ボタン無効エラー修正 — Claude Code 用プロンプト</title>
+  <style>
+    :root { color-scheme: light; --fg: #172033; --muted: #5d667a; --line: #d8dee9; --accent: #008c8c; --bg: #f6f8fb; --paper: #ffffff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; line-height: 1.75; }
+    main { max-width: 1040px; margin: 0 auto; padding: 28px 24px 56px; }
+    article { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 28px; box-shadow: 0 2px 8px rgba(23, 32, 51, 0.06); }
+    h1 { margin: 0 0 20px; padding-bottom: 14px; border-bottom: 2px solid var(--accent); font-size: 30px; line-height: 1.35; }
+    h2 { margin: 34px 0 12px; font-size: 22px; border-left: 5px solid var(--accent); padding-left: 10px; line-height: 1.4; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p, ul, ol { margin: 10px 0; }
+    li { margin: 4px 0; }
+    a { color: #006fbd; }
+    code { background: #eef3f7; border: 1px solid #dce5ee; border-radius: 4px; padding: 1px 5px; font-family: Consolas, "Courier New", monospace; font-size: 0.95em; }
+    pre { background: #111827; color: #f9fafb; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+    pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+    figure { margin: 18px 0 28px; }
+    figure img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px rgba(23, 32, 51, 0.12); }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    @media (max-width: 720px) { main { padding: 16px 12px 36px; } article { padding: 20px 16px; } h1 { font-size: 24px; } h2 { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+<h1>RPA 申請ボタン無効エラー修正 — Claude Code 用プロンプト</h1>
+<h2>現象（コピーして Claude Code に渡す用）</h2>
+<pre><code>残業申請ツールの Web 申請（Playwright RPA）で、申請ボタンをクリックすると次のエラーになります。
+
+- エラー: Error invoking remote method 'api-web-submit-overtime': Error: ブラウザ自動操作中にエラーが発生しました: page.click: Timeout 30000ms exceeded.
+- ログより: locator は「申請」ボタンに解決しているが、そのボタンが disabled（class に vb-button--disabled が付いている）のため、クリックが「element is not enabled」で 30 秒間リトライしてタイムアウトしている。
+- 申請ボタンは DOM 上にはあるが、フォームのクライアント側検証のため無効のまま有効にならない。</code></pre>
+<h2>依頼する修正内容（Claude Code に渡す指示）</h2>
+<pre><code>以下を実施してください。
+
+1. 申請ボタンのクリック処理を変更する
+   - 単に「申請」テキストのボタンを探して click するのではなく、「有効な」申請ボタンだけを対象にする。
+   - 例: :not(.vb-button--disabled) や :not([disabled]) を使い、有効になったボタンが現れるまで最大 20 秒程度待ってからクリックする。
+
+2. フォーム検証が走るまでの待機を入れる
+   - 部署（および申請経路）まで入力したあと、申請ボタンを探す前に 1～2 秒程度 wait を入れる。
+   - 必要なら、フォーカスを外す（blur）などして、クライアント側の検証が実行されるようにする。
+
+3. タイムアウト時のメッセージを分かりやすくする
+   - 有効な申請ボタンが指定時間内に現れない場合は、「申請ボタンが有効になりませんでした。必須項目の入力・選択を確認してください」のようなメッセージでエラーにすること。
+
+対象ファイル: src/main/automation.ts の submitOvertimeViaBrowser 内、申請ボタンを探してクリックしている箇所（submitSelectors / page.click 付近）。</code></pre>
+<h2>本リポジトリで行った対応（参考）</h2>
+<ul>
+<li>部署入力後、約 1.5 秒待機 → <code>document.activeElement.blur()</code> → さらに 0.8 秒待機を追加。</li>
+<li>申請ボタンは「有効な」ものだけを対象に変更:</li>
+<li><code>button.vb-button--appearancePrimary:has-text(&quot;申請&quot;):not(.vb-button--disabled)</code> 等で最大 20 秒待機。</li>
+<li>有効なボタンが現れない場合は、申請ボタンがずっと無効だった旨を説明するエラーを出すように変更。</li>
+<li>上記は <code>overtime-app/src/main/automation.ts</code> に既に反映済み。ビルドし直す場合は <code>npm run build</code> を実行すること。</li>
+</ul>
+    </article>
+  </main>
+</body>
+</html>

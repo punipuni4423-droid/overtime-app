@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>更新・リリース手順</title>
+  <style>
+    :root { color-scheme: light; --fg: #172033; --muted: #5d667a; --line: #d8dee9; --accent: #008c8c; --bg: #f6f8fb; --paper: #ffffff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; line-height: 1.75; }
+    main { max-width: 1040px; margin: 0 auto; padding: 28px 24px 56px; }
+    article { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 28px; box-shadow: 0 2px 8px rgba(23, 32, 51, 0.06); }
+    h1 { margin: 0 0 20px; padding-bottom: 14px; border-bottom: 2px solid var(--accent); font-size: 30px; line-height: 1.35; }
+    h2 { margin: 34px 0 12px; font-size: 22px; border-left: 5px solid var(--accent); padding-left: 10px; line-height: 1.4; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p, ul, ol { margin: 10px 0; }
+    li { margin: 4px 0; }
+    a { color: #006fbd; }
+    code { background: #eef3f7; border: 1px solid #dce5ee; border-radius: 4px; padding: 1px 5px; font-family: Consolas, "Courier New", monospace; font-size: 0.95em; }
+    pre { background: #111827; color: #f9fafb; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+    pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+    figure { margin: 18px 0 28px; }
+    figure img { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px rgba(23, 32, 51, 0.12); }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    @media (max-width: 720px) { main { padding: 16px 12px 36px; } article { padding: 20px 16px; } h1 { font-size: 24px; } h2 { font-size: 19px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+<h1>更新・リリース手順</h1>
+<p>この手順は、freee残業申請アプリを安全に更新して GitHub Release へ公開するためのもの。</p>
+<h2>最初にやること</h2>
+<p>このローカル作業ツリーは、2026-06-10 に GitHub 最新 <code>v1.0.12</code> へ同期済み。</p>
+<p>次回以降も、作業前に現在の差分を保存してから最新 <code>origin/main</code> に合わせる。</p>
+<pre><code>Set-Location &quot;C:\dev\AI\freee残業申請\overtime-app&quot;
+git status -sb
+git diff &gt; ..\local-before-update.patch
+git fetch --all --tags --prune</code></pre>
+<p>未コミット変更を一時退避する場合:</p>
+<pre><code>git stash push -u -m &quot;local changes before syncing to latest release&quot;
+git pull --ff-only</code></pre>
+<p>退避せずに作業を続ける場合は、<code>origin/main</code> と差分を比較して、必要な変更だけ移す。</p>
+<pre><code>git diff --stat origin/main
+git diff --name-status origin/main</code></pre>
+<h2>開発開始前チェック</h2>
+<pre><code>Set-Location &quot;C:\dev\AI\freee残業申請\overtime-app&quot;
+git status -sb
+git log --oneline --decorate -5
+npm install
+npm run typecheck
+npm run build</code></pre>
+<p><code>scripts/auto-approve-work-time.mjs</code> が存在する場合は構文も確認する。</p>
+<pre><code>node --check out\main\index.js
+node --check out\preload\index.js
+node --check scripts\auto-approve-work-time.mjs</code></pre>
+<h2>実装時の確認ポイント</h2>
+<ul>
+<li>freee API のトークン値はログやドキュメントに出さない</li>
+<li>実承認が走る操作は、ユーザー確認なしに本番データで試さない</li>
+<li>勤務時間修正の自動承認は、申請経路チェックを必ず通す</li>
+<li>残業時間通知は「時間外労働のみ」を基準にする</li>
+<li>通知時間の初期選択は 30 / 65 時間</li>
+<li>有給申請の取得内容は <code>values[].type</code> 優先</li>
+<li><code>store-get</code> / <code>store-set</code> は許可リスト方式。新しい設定キーを追加するときは許可リストも更新する</li>
+<li>Web 取得フォールバックは残すが、UI上の説明バナーは出さない方針</li>
+</ul>
+<h2>リリース手順</h2>
+<p>パッチ更新の場合:</p>
+<pre><code>npm version patch --no-git-tag-version
+npm run typecheck
+npm run build
+npm run build:win</code></pre>
+<p>差分確認:</p>
+<pre><code>git status -sb
+git diff --stat</code></pre>
+<p>コミットとタグ:</p>
+<pre><code>git add package.json package-lock.json src scripts electron-builder.yml
+git commit -m &quot;vX.Y.Z: 変更内容&quot;
+git tag vX.Y.Z
+git push origin main
+git push origin vX.Y.Z</code></pre>
+<p>GitHub Release 公開:</p>
+<pre><code>npm run publish:win
+gh release view vX.Y.Z --repo punipuni4423-droid/overtime-app</code></pre>
+<p><code>electron-builder</code> の publish で Draft のままになる場合は、Release を公開状態にする。</p>
+<pre><code>gh release edit vX.Y.Z --repo punipuni4423-droid/overtime-app --draft=false</code></pre>
+<h2>Portable ZIP が必要な場合</h2>
+<p><code>dist/win-unpacked</code> ができていることを確認する。</p>
+<pre><code>npm run build:unpack</code></pre>
+<p>ZIP 名は ASCII にする。</p>
+<pre><code>Compress-Archive -Path dist\win-unpacked -DestinationPath ..\freee-application-tool-vX.Y.Z-portable.zip -Force</code></pre>
+<p>Release に追加する。</p>
+<pre><code>gh release upload vX.Y.Z ..\freee-application-tool-vX.Y.Z-portable.zip --repo punipuni4423-droid/overtime-app</code></pre>
+<h2>最終確認</h2>
+<pre><code>gh release view vX.Y.Z --repo punipuni4423-droid/overtime-app --json tagName,isDraft,isPrerelease,assets,url
+git status -sb</code></pre>
+<p>確認するもの:</p>
+<ul>
+<li><code>latest.yml</code></li>
+<li><code>overtime-app_Setup_X.Y.Z.exe</code></li>
+<li><code>.blockmap</code></li>
+<li>必要なら portable ZIP</li>
+<li>Release が Draft ではないこと</li>
+<li><code>main</code> と tag が push 済みであること</li>
+</ul>
+    </article>
+  </main>
+</body>
+</html>
