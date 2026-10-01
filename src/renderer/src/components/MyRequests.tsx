@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { CANCEL_PHASE_LABEL, type CancelPhase } from '../../../shared/requestCancellation'
 import { RefreshCw, Clock, CalendarDays, Trash2, RotateCcw, CheckSquare, Square, X } from 'lucide-react'
 
 interface MyRequest {
@@ -62,17 +63,19 @@ export function MyRequests() {
     const [filterType, setFilterType] = useState<FilterType>('in_progress')
     const [selected, setSelected] = useState<Set<string>>(new Set())
     const [operating, setOperating] = useState(false)
-    const [opProgress, setOpProgress] = useState<{ current: number; total: number } | null>(null)
+    const [opProgress, setOpProgress] = useState<{ current: number; total: number; phase?: CancelPhase } | null>(null)
     const [opError, setOpError] = useState<string | null>(null)
     const [opSuccess, setOpSuccess] = useState<string | null>(null)
     const [, setCompanyId] = useState(0)
 
-    const fetchRequests = useCallback(async () => {
+    const fetchRequests = useCallback(async (preserveResult = false) => {
         setLoading(true)
         setError(null)
-        setSelected(new Set())
-        setOpError(null)
-        setOpSuccess(null)
+        if (!preserveResult) {
+            setSelected(new Set())
+            setOpError(null)
+            setOpSuccess(null)
+        }
         try {
             // ユーザー情報を取得（companyId を削除APIで使用）
             try {
@@ -138,10 +141,11 @@ export function MyRequests() {
         setOpSuccess(null)
         setOpProgress({ current: 0, total: itemsToProcess.length })
 
-        const unsubscribe = window.api.onCancelBatchProgress((p: any) => {
-            setOpProgress({ current: p.current, total: p.total })
+        const unsubscribe = window.api.onCancelBatchProgress((p) => {
+            setOpProgress({ current: p.current, total: p.total, phase: p.phase })
         })
 
+        let remaining = new Set(itemsToProcess.map(itemKey))
         try {
             const batchItems = itemsToProcess.map((item) => ({
                 requestType: item.type as 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time',
@@ -155,10 +159,11 @@ export function MyRequests() {
                 items: batchItems,
                 action,
             })
+            remaining = new Set(result.failed.map((item) => `${item.requestType}-${item.requestId}`))
 
             if (result.failed.length > 0) {
                 const errorMessages = result.failed.map((f) => {
-                    const item = itemsToProcess.find((i) => i.id === f.requestId)
+                    const item = itemsToProcess.find((i) => i.type === f.requestType && i.id === f.requestId)
                     const label = item
                         ? `${TYPE_LABEL[item.type]} ${formatTargetDate(item.type, item.targetDate)}`
                         : `ID:${f.requestId}`
@@ -175,9 +180,11 @@ export function MyRequests() {
             setOpError(err.message || '実行に失敗しました')
         } finally {
             unsubscribe()
-            setOperating(false)
-            setOpProgress(null)
-            await fetchRequests()
+            setSelected(remaining)
+            try { await fetchRequests(true) } finally {
+                setOperating(false)
+                setOpProgress(null)
+            }
         }
     }
 
@@ -187,7 +194,7 @@ export function MyRequests() {
             <div className="px-6 pt-4 pb-2 shrink-0 flex items-center justify-between">
                 <h2 className="text-base font-bold text-gray-800">自分の申請一覧</h2>
                 <button
-                    onClick={fetchRequests}
+                    onClick={() => fetchRequests()}
                     disabled={loading || operating}
                     className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-[#007B7E] border border-[#007B7E] rounded-lg hover:bg-[#007b7e10] disabled:opacity-50 transition-colors"
                 >
@@ -334,7 +341,7 @@ export function MyRequests() {
                     {opProgress && operating && (
                         <div className="mb-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700 flex items-center gap-2">
                             <span className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
-                            処理中 ({opProgress.current}/{opProgress.total})...
+                            {opProgress.phase ? CANCEL_PHASE_LABEL[opProgress.phase] : '処理中'} ({opProgress.current}/{opProgress.total})...
                         </div>
                     )}
                     {opError && (

@@ -56,7 +56,11 @@ function setState(patch: Partial<State>): void {
 }
 
 async function load(force: boolean, months: number): Promise<void> {
-  if (inflight) return inflight
+  if (inflight) {
+    await inflight
+    // 操作前に開始した取得結果を、操作後の強制更新に流用しない。
+    return load(force, months)
+  }
   if (!force && state.lastFetchedAt > 0 && state.months === months) return
   setState({ loading: true, error: null, months })
   inflight = (async () => {

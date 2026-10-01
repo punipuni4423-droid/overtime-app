@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import { CANCEL_PHASE_LABEL, type CancelPhase } from '../../../shared/requestCancellation'
 import {
   RefreshCw,
   ExternalLink,
@@ -221,7 +222,7 @@ export function Approvals(): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
   const [opRunning, setOpRunning] = useState(false)
-  const [opProgress, setOpProgress] = useState<{ current: number; total: number } | null>(null)
+  const [opProgress, setOpProgress] = useState<{ current: number; total: number; phase?: CancelPhase } | null>(null)
   const [opMessage, setOpMessage] = useState<string | null>(null)
   const [opError, setOpError] = useState<string | null>(null)
   const [routes, setRoutes] = useState<ApprovalRouteOption[]>([])
@@ -677,9 +678,10 @@ export function Approvals(): React.JSX.Element {
     setOpProgress({ current: 0, total: itemsToProcess.length })
 
     const unsubscribe = window.api.onCancelBatchProgress((p) => {
-      setOpProgress({ current: p.current, total: p.total })
+      setOpProgress({ current: p.current, total: p.total, phase: p.phase })
     })
 
+    let remaining = new Set(itemsToProcess.map((item) => itemKey(item.type, item.id)))
     try {
       const batchItems = itemsToProcess.map((item) => ({
         requestType: item.type as 'overtime' | 'paid_holiday' | 'holiday_work' | 'monthly_attendance' | 'work_time',
@@ -693,10 +695,11 @@ export function Approvals(): React.JSX.Element {
         items: batchItems,
         action,
       })
+      remaining = new Set(result.failed.map((item) => itemKey(item.requestType, item.requestId)))
 
       if (result.failed.length > 0) {
         const errorMessages = result.failed.map((f) => {
-          const item = itemsToProcess.find((i) => i.id === f.requestId)
+          const item = itemsToProcess.find((i) => i.type === f.requestType && i.id === f.requestId)
           const label = item
             ? `${TYPE_LABEL[item.type]} ${formatTargetDate(item.type, item.targetDate)}`
             : `ID:${f.requestId}`
@@ -712,10 +715,11 @@ export function Approvals(): React.JSX.Element {
       setOpError(message)
     } finally {
       unsubscribe()
-      setOpRunning(false)
-      setOpProgress(null)
-      setSelected(new Set())
-      await cache.refresh()
+      setSelected(remaining)
+      try { await cache.refresh() } finally {
+        setOpRunning(false)
+        setOpProgress(null)
+      }
     }
   }
 
@@ -1076,7 +1080,7 @@ export function Approvals(): React.JSX.Element {
           {opProgress && opRunning && (
             <div className="mb-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700 flex items-center gap-2">
               <span className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              処理中 ({opProgress.current}/{opProgress.total})...
+              {opProgress.phase ? CANCEL_PHASE_LABEL[opProgress.phase] : '処理中'} ({opProgress.current}/{opProgress.total})...
             </div>
           )}
           {opError && (

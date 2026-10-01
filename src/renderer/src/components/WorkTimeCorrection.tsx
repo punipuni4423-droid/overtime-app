@@ -4,12 +4,10 @@ import { Route, useFreee } from '../hooks/useFreee'
 import { DEPARTMENTS } from '../utils/departments'
 import { DateStepper } from './ui/RequestControls'
 
-const TIME_OPTIONS = Array.from({ length: 96 }, (_, index) => {
-  const totalMinutes = index * 30
-  const h = Math.floor(totalMinutes / 60)
-  const m = totalMinutes % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-})
+// 翌日分の24時以降も、既存の申請形式のまま扱う。
+function isValidTime(value: string): boolean {
+  return /^(?:[0-3]\d|4[0-7]):[0-5]\d$/.test(value)
+}
 
 function dateToStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -33,27 +31,30 @@ type TimeRange = {
 
 let rangeId = 1
 
-function TimeSelect({
+function TimeInput({
   value,
   onChange,
+  label,
 }: {
   value: string
   onChange: (value: string) => void
+  label: string
 }) {
   return (
     <div className="relative">
       <Clock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-      <select
+      <input
+        type="text"
+        aria-label={label}
+        aria-invalid={!isValidTime(value)}
+        aria-describedby="work-time-format"
+        placeholder="09:07"
+        autoComplete="off"
+        spellCheck={false}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full pl-9 p-3 border border-gray-300 rounded-xl appearance-none focus:ring-2 focus:ring-[#007B7E] outline-none bg-white text-sm"
-      >
-        {TIME_OPTIONS.map((time) => (
-          <option key={time} value={time}>
-            {time}
-          </option>
-        ))}
-      </select>
+        className="w-full min-w-0 pl-8 pr-2 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] outline-none bg-white text-sm"
+      />
     </div>
   )
 }
@@ -83,6 +84,7 @@ export function WorkTimeCorrection() {
   const isIncompatibleRoute =
     selectedRoute?.definition_type === 'department' || selectedRoute?.definition_type === 'position'
   const isCommentEmpty = !comment.trim()
+  const hasInvalidTime = ![clockIn, clockOut, ...breaks.flatMap((item) => [item.start, item.end])].every(isValidTime)
 
   useEffect(() => {
     async function init(): Promise<void> {
@@ -104,8 +106,8 @@ export function WorkTimeCorrection() {
         window.api.getValidToken(),
       ])
       if (lastComment) setComment(String(lastComment))
-      if (lastClockIn && TIME_OPTIONS.includes(String(lastClockIn))) setClockIn(String(lastClockIn))
-      if (lastClockOut && TIME_OPTIONS.includes(String(lastClockOut))) setClockOut(String(lastClockOut))
+      if (lastClockIn && isValidTime(String(lastClockIn))) setClockIn(String(lastClockIn))
+      if (lastClockOut && isValidTime(String(lastClockOut))) setClockOut(String(lastClockOut))
 
       if (tokenResult.success && cId) {
         try {
@@ -149,6 +151,7 @@ export function WorkTimeCorrection() {
   )
 
   const handleSubmit = async (): Promise<void> => {
+    if (hasInvalidTime) return
     if (!companyId || !applicantId || !selectedRouteId) return
     setSubmitting(true)
     setSubmitError(null)
@@ -208,14 +211,17 @@ export function WorkTimeCorrection() {
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">修正後の勤務時間</label>
             <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <TimeSelect value={clockIn} onChange={setClockIn} />
+              <div className="flex-1 min-w-0">
+                <TimeInput label="出勤時刻" value={clockIn} onChange={setClockIn} />
               </div>
               <span className="text-gray-400 text-sm shrink-0">〜</span>
-              <div className="flex-1">
-                <TimeSelect value={clockOut} onChange={setClockOut} />
+              <div className="flex-1 min-w-0">
+                <TimeInput label="退勤時刻" value={clockOut} onChange={setClockOut} />
               </div>
             </div>
+            <p id="work-time-format" className="mt-2 text-xs text-gray-500">
+              時刻は1分単位で直接入力できます（例：09:07）。翌日分は25:07のように入力してください（00:00〜47:59）。
+            </p>
           </div>
 
           <div>
@@ -239,12 +245,12 @@ export function WorkTimeCorrection() {
               {breaks.map((item, index) => (
                 <div key={item.id} className="flex items-center gap-2">
                   <span className="w-10 text-xs text-gray-500 shrink-0">休憩{index + 1}</span>
-                  <div className="flex-1">
-                    <TimeSelect value={item.start} onChange={(value) => updateBreak(item.id, 'start', value)} />
+                  <div className="flex-1 min-w-0">
+                    <TimeInput label={`休憩${index + 1} 開始時刻`} value={item.start} onChange={(value) => updateBreak(item.id, 'start', value)} />
                   </div>
                   <span className="text-gray-400 text-sm shrink-0">〜</span>
-                  <div className="flex-1">
-                    <TimeSelect value={item.end} onChange={(value) => updateBreak(item.id, 'end', value)} />
+                  <div className="flex-1 min-w-0">
+                    <TimeInput label={`休憩${index + 1} 終了時刻`} value={item.end} onChange={(value) => updateBreak(item.id, 'end', value)} />
                   </div>
                   <button
                     type="button"
@@ -258,6 +264,12 @@ export function WorkTimeCorrection() {
               ))}
             </div>
           </div>
+
+          {hasInvalidTime && (
+            <p role="alert" className="text-sm text-red-600">
+              勤務時間・休憩時間を00:00〜47:59の形式で入力してください。
+            </p>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -354,7 +366,7 @@ export function WorkTimeCorrection() {
       <div className="mt-3">
         <button
           onClick={handleSubmit}
-          disabled={loading || submitting || !isConfigured || !selectedRouteId || isCommentEmpty}
+          disabled={loading || submitting || !isConfigured || !selectedRouteId || isCommentEmpty || hasInvalidTime}
           className="w-full bg-[#007B7E] hover:bg-[#006669] text-white disabled:bg-gray-300 disabled:cursor-not-allowed p-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.98]"
         >
           {submitting || loading ? (

@@ -84,7 +84,7 @@ export interface ManagerOvertimeBrowserResult {
     items: ManagerOvertimeBrowserItem[];
 }
 
-function rpaBrowserLaunchArgs(headless: boolean): string[] {
+export function rpaBrowserLaunchArgs(headless: boolean): string[] {
     const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'];
     if (headless) {
         args.push('--headless=new', '--hide-scrollbars', '--mute-audio', '--no-startup-window', '--disable-gpu');
@@ -181,7 +181,7 @@ async function navigateToManagerWorkRecords(page: Page, year: number, month: num
 // セッション保存先（ログイン済みCookieを再利用してログインをスキップ）
 const SESSION_PATH = path.join(os.homedir(), '.overtime-app', 'browser-session.json');
 
-function loadSessionState(): object | null {
+export function loadSessionState(): object | null {
     try {
         if (fs.existsSync(SESSION_PATH)) {
             return JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
@@ -665,7 +665,7 @@ async function fillInputAndBlurReliably(page: Page, selector: string, value: str
     return false;
 }
 
-async function doLogin(page: Page, context: BrowserContext, email: string, password: string, savedSession: object | null): Promise<void> {
+export async function doLogin(page: Page, context: BrowserContext, email: string, password: string, savedSession: object | null): Promise<void> {
     const loginUrl = 'https://accounts.secure.freee.co.jp/login/hr';
     // セッション確認はトップページで行う（フォームURLへの遷移は呼び出し元に任せる）
     const checkUrl = 'https://p.secure.freee.co.jp/';

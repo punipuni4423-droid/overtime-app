@@ -7,7 +7,9 @@ import axios from 'axios'
 import Store from 'electron-store'
 import { autoUpdater } from 'electron-updater'
 import { TokenManager, TokenAuthRequiredError } from './tokenManager'
-import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, cancelRequestViaBrowser, cancelRequestBatchViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser, submitHolidayWorkBatchViaBrowser, fetchManagerOvertimeSummariesViaBrowser } from './automation'
+import { submitOvertimeViaBrowser, submitPaidLeaveViaBrowser, submitMonthlyCloseViaBrowser, preLoginViaBrowser, submitTimeClockViaBrowser, approveBatchViaBrowser, approveBulkViaBrowser, submitOvertimeBatchViaBrowser, submitPaidLeaveBatchViaBrowser, submitHolidayWorkBatchViaBrowser, fetchManagerOvertimeSummariesViaBrowser } from './automation'
+import { cancelRequests } from './requestCancellation'
+import { createCancellationAdapter } from './requestCancellationAdapter'
 
 const store = new Store({
   defaults: {
@@ -2384,237 +2386,38 @@ app.whenReady().then(() => {
     return results.sort((a, b) => (b.targetDate || '').localeCompare(a.targetDate || ''))
   })
 
-  // ─── 申請取り下げ（Web） ──────────────────────────────────────
-  ipcMain.handle('api-cancel-request-web', async (_, payload) => {
-    try {
-      const email = await store.get('FREEE_EMAIL')
-      const password = await store.get('FREEE_PASSWORD')
-      if (!email || !password) {
-        throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
-      }
-      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'withdraw', headless: typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS })
-    } catch (error: any) {
-      console.error('Cancel request error:', error)
-      throw error
-    }
-  })
-
-  // ─── 申請削除（Web） ──────────────────────────────────────────
-  ipcMain.handle('api-delete-request-web', async (_, payload) => {
-    try {
-      const email = await store.get('FREEE_EMAIL')
-      const password = await store.get('FREEE_PASSWORD')
-      if (!email || !password) {
-        throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
-      }
-      return await cancelRequestViaBrowser({ ...payload, email, password, action: 'delete', headless: typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS })
-    } catch (error: any) {
-      console.error('Delete request error:', error)
-      throw error
-    }
-  })
-
-  // ─── 申請バッチ取り下げ・削除（Web） ─────────────────────────────
-  ipcMain.handle('api-cancel-request-web-batch', async (event, payload) => {
-    try {
-      const email = await store.get('FREEE_EMAIL')
-      const password = await store.get('FREEE_PASSWORD')
-      if (!email || !password) {
-        throw new Error('Web版操作にはメールアドレスとパスワードの設定が必要です。設定画面から入力してください。')
-      }
-      const items = Array.isArray(payload?.items) ? payload.items : []
-      const action = payload?.action === 'withdraw' ? 'withdraw' : 'delete'
-      const headless = typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS
-      const total = items.length
-      if (total === 0) return { total: 0, succeeded: 0, failed: [] }
-
-      const token = await tokenManager.getValidAccessToken()
-      const { companyId } = await getUserInfo(token)
-      const browserFallbackItems: any[] = []
-      const failed: Array<{ requestId: number; error: string }> = []
-      let succeeded = 0
-      let completed = 0
-
-      const emitProgress = (item: any, success: boolean, error?: string): void => {
-        completed += 1
-        event.sender.send('cancel-batch-progress', {
-          current: completed,
-          total,
-          requestId: item.requestId,
-          success,
-          error,
-        })
-      }
-
-      const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-      const typePathFor = (requestType: string): string | undefined =>
-        TYPE_PATH_MAP[requestType as ApprovalActionType]
-      const hasStepInfo = (item: any): boolean =>
-        item.currentRound !== undefined &&
-        item.currentRound !== null &&
-        item.currentStepId !== undefined &&
-        item.currentStepId !== null
-
-      const deleteViaApi = async (item: any): Promise<void> => {
-        const typePath = typePathFor(item.requestType)
-        if (!typePath) throw new Error(`Unsupported request type for API delete: ${item.requestType}`)
-        const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${typePath}/${item.requestId}`
-        let lastError: unknown = null
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          try {
-            await axios.delete(url, {
-              headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-              params: { company_id: companyId }
-            })
-            return
-          } catch (err) {
-            lastError = err
-            if (attempt < 2) await sleep(350 * (attempt + 1))
-          }
-        }
-        const axErr = lastError as { response?: { data?: unknown }; message?: string }
-        const message = axErr?.response?.data
-          ? typeof axErr.response.data === 'string'
-            ? axErr.response.data
-            : JSON.stringify(axErr.response.data)
-          : axErr?.message || 'API delete failed'
-        throw new Error(message)
-      }
-
-      const cancelViaApi = async (item: any): Promise<void> => {
-        const typePath = typePathFor(item.requestType)
-        if (!typePath) throw new Error(`Unsupported request type for API cancel: ${item.requestType}`)
-        if (!hasStepInfo(item)) throw new Error('Missing current approval step info for API cancel')
-        const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${typePath}/${item.requestId}/actions`
-        const body = {
-          company_id: companyId,
-          approval_action: 'cancel',
-          target_round: item.currentRound,
-          target_step_id: item.currentStepId,
-        }
-        try {
-          await axios.post(url, body, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-              'Content-Type': 'application/json',
-              'FREEE-VERSION': '2022-02-01'
-            }
-          })
-        } catch (err: unknown) {
-          const axErr = err as { response?: { data?: unknown }; message?: string }
-          const message = axErr.response?.data
-            ? typeof axErr.response.data === 'string'
-              ? axErr.response.data
-              : JSON.stringify(axErr.response.data)
-            : axErr.message || 'API cancel failed'
-          throw new Error(message)
-        }
-      }
-
-      const runLimited = async <T,>(
-        list: T[],
-        limit: number,
-        worker: (item: T) => Promise<void>
-      ): Promise<void> => {
-        let next = 0
-        const workers = Array.from({ length: Math.min(limit, list.length) }, async () => {
-          while (next < list.length) {
-            const current = list[next]
-            next += 1
-            await worker(current)
-          }
-        })
-        await Promise.all(workers)
-      }
-
-      await runLimited(items, 4, async (item: any) => {
-        const status = String(item.status || '').toLowerCase()
-        const supportsApi = !!typePathFor(item.requestType)
-        const canDirectDelete = action === 'delete' && supportsApi && status && status !== 'in_progress'
-        const canCancel = supportsApi && status === 'in_progress' && hasStepInfo(item)
-
-        if (!canDirectDelete && !canCancel) {
-          browserFallbackItems.push(item)
-          return
-        }
-
-        try {
-          if (canCancel) {
-            await cancelViaApi(item)
-            if (action === 'withdraw') {
-              succeeded += 1
-              emitProgress(item, true)
-              return
-            }
-            await deleteViaApi(item)
-            succeeded += 1
-            emitProgress(item, true)
-            return
-          }
-
-          await deleteViaApi(item)
-          succeeded += 1
-          emitProgress(item, true)
-        } catch (err) {
-          console.warn('[API batch cancel/delete] falling back to browser:', item.requestId, err)
-          browserFallbackItems.push(item)
-        }
-      })
-
-      if (browserFallbackItems.length > 0) {
-        const completedBeforeBrowser = completed
-        const webResult = await cancelRequestBatchViaBrowser({
-          ...payload,
-          items: browserFallbackItems,
-          action,
-          email,
-          password,
-          headless,
-          onProgress: (p) => event.sender.send('cancel-batch-progress', {
-            ...p,
-            current: completedBeforeBrowser + p.current,
-            total,
-          })
-        })
-        succeeded += webResult.succeeded
-        failed.push(...webResult.failed)
-        completed = completedBeforeBrowser + browserFallbackItems.length
-      }
-
-      return { total, succeeded, failed }
-    } catch (error: any) {
-      console.error('Cancel batch error:', error)
-      throw error
-    }
-  })
-
-  // ─── 申請削除（REST API直接 - draft専用・高速） ─────────────────
-  ipcMain.handle('api-delete-request-api', async (_, payload) => {
-    const { requestType, requestId, companyId } = payload
-    const typePathMap: Record<string, string> = {
-      overtime: 'overtime_works',
-      paid_holiday: 'paid_holidays',
-      holiday_work: 'holiday_works',
-      monthly_attendance: 'monthly_attendances',
-      work_time: 'work_times',
-    }
-    const typePath = typePathMap[requestType]
-    if (!typePath) throw new Error(`不明な申請タイプ: ${requestType}`)
+  // 全ての取り下げ・削除入口を同じ状態確認と排他制御へ集約する。
+  const runCancellation = async (event: Electron.IpcMainInvokeEvent, payload: any) => {
     const token = await tokenManager.getValidAccessToken()
-    const url = `https://api.freee.co.jp/hr/api/v1/approval_requests/${typePath}/${requestId}`
-    console.log(`[API Call] DELETE ${url}`)
-    try {
-      await axios.delete(url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-        params: { company_id: companyId }
-      })
-      return { success: true, message: '申請を削除しました。' }
-    } catch (err: any) {
-      console.error(`[API Error] DELETE ${url} - Status: ${err.response?.status} - ${err.message}`)
-      throw new Error(err.response?.data ? JSON.stringify(err.response.data) : err.message)
+    const user = await getUserInfo(token)
+    const adapter = createCancellationAdapter({
+      ...user,
+      headless: typeof payload?.headless === 'boolean' ? payload.headless : RPA_HEADLESS,
+      getToken: () => tokenManager.getValidAccessToken(),
+      getCredentials: () => ({
+        email: String(store.get('FREEE_EMAIL') || ''),
+        password: String(store.get('FREEE_PASSWORD') || ''),
+      }),
+    })
+    adapter.deps.onProgress = (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('cancel-batch-progress', progress)
     }
-  })
+    try {
+      return await cancelRequests(payload?.items, payload?.action, adapter.deps)
+    } finally {
+      await adapter.close()
+    }
+  }
+
+  ipcMain.handle('api-cancel-request-web-batch', runCancellation)
+  const runSingleCancellation = async (event: Electron.IpcMainInvokeEvent, payload: any, action: 'withdraw' | 'delete') => {
+    const result = await runCancellation(event, { ...payload, items: [payload], action })
+    if (result.failed.length) throw new Error(result.failed[0].error)
+    return { success: true, message: action === 'delete' ? '申請を削除しました。' : '申請を取り下げました。' }
+  }
+  ipcMain.handle('api-cancel-request-web', (event, payload) => runSingleCancellation(event, payload, 'withdraw'))
+  ipcMain.handle('api-delete-request-web', (event, payload) => runSingleCancellation(event, payload, 'delete'))
+  ipcMain.handle('api-delete-request-api', (event, payload) => runSingleCancellation(event, payload, 'delete'))
 
   ipcMain.handle('api-submit-paid-leave', async (_, payload) => {
     const token = await tokenManager.getValidAccessToken()

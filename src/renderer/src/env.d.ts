@@ -225,9 +225,9 @@ interface Window {
       }>
       action: 'withdraw' | 'delete'
       headless?: boolean
-    }) => Promise<{ total: number; succeeded: number; failed: Array<{ requestId: number; error: string }> }>
+    }) => Promise<import('../../shared/requestCancellation').CancelResult>
     onCancelBatchProgress: (
-      callback: (progress: { current: number; total: number; requestId: number; success: boolean; error?: string }) => void
+      callback: (progress: import('../../shared/requestCancellation').CancelProgress) => void
     ) => () => void
     submitMonthlyClose: (payload: any) => Promise<any>
     submitMonthlyCloseWeb: (payload: any) => Promise<any>
