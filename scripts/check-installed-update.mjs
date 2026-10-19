@@ -27,6 +27,10 @@ assert.ok(spawnSync('powershell.exe', ['-NoProfile', '-Command', 'exit 0'], { en
   '既存タスクを保護できないため中止')
 const app = await electron.launch({ executablePath: installed,
   args: [`--user-data-dir=${join(root, 'profile')}`], env, timeout: 60000 })
+app.on('console', (message) => {
+  const value = message.text()
+  if (/update|download|HttpError/i.test(value)) console.log(value)
+})
 try {
   const actual = await app.evaluate(({ app }) => ({ version: app.getVersion(), userData: app.getPath('userData') }))
   assert.notEqual(actual.version, expectedVersion, '更新前の旧版で確認する')
@@ -51,6 +55,11 @@ try {
     untested: '更新ボタンの押下と実インストールは行っていない' }
   await writeFile(join(root, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
+} catch (error) {
+  const page = await app.firstWindow().catch(() => null)
+  if (page) await page.screenshot({ path: join(root, 'update-failure.png') }).catch(() => {})
+  console.error(`更新検証失敗の記録先: ${root}`)
+  throw error
 } finally {
   // autoInstallOnAppQuit=trueのため通常のapp.close()は使用しない。
   await app.evaluate(({ app }) => app.exit(1)).catch(() => {})
