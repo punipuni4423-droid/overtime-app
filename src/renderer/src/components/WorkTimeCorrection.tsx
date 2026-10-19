@@ -9,6 +9,10 @@ function isValidTime(value: string): boolean {
   return /^(?:[0-3]\d|4[0-7]):[0-5]\d$/.test(value)
 }
 
+function normalizeWorkTime(value: string): string {
+  return /^\d{4}$/.test(value) ? `${value.slice(0, 2)}:${value.slice(2)}` : value
+}
+
 function dateToStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -35,10 +39,12 @@ function TimeInput({
   value,
   onChange,
   label,
+  compact = false,
 }: {
   value: string
   onChange: (value: string) => void
   label: string
+  compact?: boolean
 }) {
   return (
     <div className="relative">
@@ -46,13 +52,16 @@ function TimeInput({
       <input
         type="text"
         aria-label={label}
-        aria-invalid={!isValidTime(value)}
+        aria-invalid={!isValidTime(compact ? normalizeWorkTime(value) : value)}
         aria-describedby="work-time-format"
-        placeholder="09:07"
+        placeholder={compact ? '0901' : '09:07'}
+        inputMode={compact ? 'numeric' : undefined}
         autoComplete="off"
         spellCheck={false}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={compact ? (e) => e.currentTarget.select() : undefined}
+        onBlur={compact ? () => onChange(normalizeWorkTime(value)) : undefined}
         className="w-full min-w-0 pl-8 pr-2 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#007B7E] outline-none bg-white text-sm"
       />
     </div>
@@ -84,7 +93,9 @@ export function WorkTimeCorrection() {
   const isIncompatibleRoute =
     selectedRoute?.definition_type === 'department' || selectedRoute?.definition_type === 'position'
   const isCommentEmpty = !comment.trim()
-  const hasInvalidTime = ![clockIn, clockOut, ...breaks.flatMap((item) => [item.start, item.end])].every(isValidTime)
+  const normalizedClockIn = normalizeWorkTime(clockIn)
+  const normalizedClockOut = normalizeWorkTime(clockOut)
+  const hasInvalidTime = ![normalizedClockIn, normalizedClockOut, ...breaks.flatMap((item) => [item.start, item.end])].every(isValidTime)
 
   useEffect(() => {
     async function init(): Promise<void> {
@@ -170,7 +181,7 @@ export function WorkTimeCorrection() {
         departmentId: deptId,
         departmentName,
         comment,
-        workRecords: [{ clockInAt: clockIn, clockOutAt: clockOut }],
+        workRecords: [{ clockInAt: normalizedClockIn, clockOutAt: normalizedClockOut }],
         breakRecords,
         latenessMins: minutesValue(latenessMins),
         earlyLeavingMins: minutesValue(earlyLeavingMins),
@@ -178,8 +189,8 @@ export function WorkTimeCorrection() {
       await Promise.all([
         window.api.storeSet('LAST_WORK_TIME_ROUTE_ID', selectedRouteId),
         window.api.storeSet('LAST_WORK_TIME_COMMENT', comment),
-        window.api.storeSet('LAST_WORK_TIME_CLOCK_IN', clockIn),
-        window.api.storeSet('LAST_WORK_TIME_CLOCK_OUT', clockOut),
+        window.api.storeSet('LAST_WORK_TIME_CLOCK_IN', normalizedClockIn),
+        window.api.storeSet('LAST_WORK_TIME_CLOCK_OUT', normalizedClockOut),
       ])
       setSuccess(true)
       setTimeout(() => setSuccess(false), 5000)
@@ -212,15 +223,15 @@ export function WorkTimeCorrection() {
             <label className="block text-sm font-semibold text-gray-700 mb-2">修正後の勤務時間</label>
             <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0">
-                <TimeInput label="出勤時刻" value={clockIn} onChange={setClockIn} />
+                <TimeInput label="出勤時刻" value={clockIn} onChange={setClockIn} compact />
               </div>
               <span className="text-gray-400 text-sm shrink-0">〜</span>
               <div className="flex-1 min-w-0">
-                <TimeInput label="退勤時刻" value={clockOut} onChange={setClockOut} />
+                <TimeInput label="退勤時刻" value={clockOut} onChange={setClockOut} compact />
               </div>
             </div>
             <p id="work-time-format" className="mt-2 text-xs text-gray-500">
-              時刻は1分単位で直接入力できます（例：09:07）。翌日分は25:07のように入力してください（00:00〜47:59）。
+              数字4桁で入力できます（0901 → 09:01、1810 → 18:10）。欄を離れると自動で整います。翌日分は2507 → 25:07（00:00〜47:59）。
             </p>
           </div>
 
@@ -267,7 +278,7 @@ export function WorkTimeCorrection() {
 
           {hasInvalidTime && (
             <p role="alert" className="text-sm text-red-600">
-              勤務時間・休憩時間を00:00〜47:59の形式で入力してください。
+              勤務時間は数字4桁またはHH:mm、休憩時間はHH:mmで入力してください（00:00〜47:59）。
             </p>
           )}
 

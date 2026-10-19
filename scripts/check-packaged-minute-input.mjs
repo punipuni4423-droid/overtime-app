@@ -1,12 +1,13 @@
 // 配布アプリを空の設定で起動し、送信せず入力欄を確認する。
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { _electron as electron } from 'playwright-core'
 
 const root = await mkdtemp(join(tmpdir(), 'freee-minute-release-'))
+const expectedVersion = JSON.parse(await readFile(resolve('package.json'), 'utf8')).version
 const userData = join(root, 'profile')
 const roaming = join(root, 'roaming')
 await mkdir(roaming)
@@ -23,7 +24,7 @@ const app = await electron.launch({
 })
 try {
   const actual = await app.evaluate(({ app }) => ({ version: app.getVersion(), userData: app.getPath('userData'), packaged: app.isPackaged }))
-  assert.equal(actual.version, '1.0.18')
+  assert.equal(actual.version, expectedVersion)
   assert.equal(actual.packaged, true)
   assert.equal(actual.userData.toLowerCase(), userData.toLowerCase())
   const page = await app.firstWindow()
@@ -32,25 +33,31 @@ try {
   const end = page.getByRole('textbox', { name: '退勤時刻', exact: true })
   assert.equal(await start.getAttribute('type'), 'text')
   assert.equal(await start.getAttribute('list'), null)
-  await start.fill('09:07')
-  await end.fill('18:43')
-  assert.equal(await start.inputValue(), '09:07')
-  assert.equal(await end.inputValue(), '18:43')
+  await start.click()
+  await start.pressSequentially('0901')
+  assert.equal(await start.inputValue(), '0901')
+  await end.fill('1810')
+  assert.equal(await start.inputValue(), '09:01')
+  await end.press('Tab')
+  assert.equal(await end.inputValue(), '18:10')
   assert.equal(await start.getAttribute('aria-invalid'), 'false')
   assert.equal(await page.getByRole('textbox', { name: '休憩1 開始時刻' }).inputValue(), '12:00')
   assert.equal(await page.getByRole('textbox', { name: '休憩1 終了時刻' }).inputValue(), '13:00')
-  await end.fill('25:07')
+  await end.fill('2507')
   assert.equal(await end.getAttribute('aria-invalid'), 'false')
+  await end.press('Tab')
+  assert.equal(await end.inputValue(), '25:07')
   await start.fill('09:60')
   assert.equal(await start.getAttribute('aria-invalid'), 'true')
   assert.equal(await page.getByRole('button', { name: '勤怠時間修正を申請する' }).isDisabled(), true)
-  await start.fill('09:07')
-  await end.fill('18:43')
+  await start.fill('0901')
+  await end.fill('1810')
+  await end.press('Tab')
   await page.screenshot({ path: join(root, 'packaged-minute-input.png') })
   const result = { result: 'PASS', ...actual, screenshot: join(root, 'packaged-minute-input.png'),
     scope: '配布用実アプリ・空設定。入力のみ。freeeへの申請送信なし。既存設定と自動承認タスクは隔離。' }
   await writeFile(join(root, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
 } finally {
-  await app.close()
+  await app.evaluate(({ app }) => app.exit(1)).catch(() => {})
 }
